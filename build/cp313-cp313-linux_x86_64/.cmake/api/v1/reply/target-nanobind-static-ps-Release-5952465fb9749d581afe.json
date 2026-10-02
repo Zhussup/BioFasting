@@ -1,0 +1,942 @@
+{
+	"archive" : {},
+	"artifacts" : 
+	[
+		{
+			"path" : "libnanobind-static-ps.a"
+		}
+	],
+	"backtrace" : 3,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_library",
+			"nanobind_build_library",
+			"nanobind_add_module",
+			"target_link_libraries",
+			"target_compile_options",
+			"target_compile_definitions",
+			"target_include_directories",
+			"target_compile_features"
+		],
+		"files" : 
+		[
+			".venv/lib/python3.13/site-packages/nanobind/cmake/nanobind-config.cmake",
+			"CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 2,
+				"file" : 1,
+				"line" : 54,
+				"parent" : 0
+			},
+			{
+				"command" : 1,
+				"file" : 0,
+				"line" : 545,
+				"parent" : 1
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 158,
+				"parent" : 2
+			},
+			{
+				"command" : 3,
+				"file" : 0,
+				"line" : 309,
+				"parent" : 2
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 246,
+				"parent" : 2
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 263,
+				"parent" : 2
+			},
+			{
+				"command" : 4,
+				"file" : 0,
+				"line" : 268,
+				"parent" : 2
+			},
+			{
+				"command" : 5,
+				"file" : 0,
+				"line" : 237,
+				"parent" : 2
+			},
+			{
+				"command" : 5,
+				"file" : 0,
+				"line" : 288,
+				"parent" : 2
+			},
+			{
+				"command" : 6,
+				"file" : 0,
+				"line" : 311,
+				"parent" : 2
+			},
+			{
+				"command" : 7,
+				"file" : 0,
+				"line" : 315,
+				"parent" : 2
+			}
+		]
+	},
+	"codemodelVersion" : 
+	{
+		"major" : 2,
+		"minor" : 11
+	},
+	"compileDependencies" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "tsl::robin_map::@6890427a1f51a3e7e1df"
+		}
+	],
+	"compileGroups" : 
+	[
+		{
+			"compileCommandFragments" : 
+			[
+				{
+					"fragment" : "-O3 -DNDEBUG -std=c++20 -fPIC -fvisibility=hidden"
+				},
+				{
+					"backtrace" : 5,
+					"fragment" : "-ffunction-sections"
+				},
+				{
+					"backtrace" : 5,
+					"fragment" : "-fdata-sections"
+				},
+				{
+					"backtrace" : 6,
+					"fragment" : "-fno-strict-aliasing"
+				},
+				{
+					"backtrace" : 7,
+					"fragment" : "-mtls-dialect=gnu2"
+				}
+			],
+			"defines" : 
+			[
+				{
+					"backtrace" : 8,
+					"define" : "NB_BUILD"
+				},
+				{
+					"backtrace" : 9,
+					"define" : "NB_COMPACT_ASSERTIONS"
+				}
+			],
+			"includes" : 
+			[
+				{
+					"backtrace" : 10,
+					"path" : "/usr/include/python3.13"
+				},
+				{
+					"backtrace" : 10,
+					"path" : "/home/zhus/Desktop/biofaston/.venv/lib/python3.13/site-packages/nanobind/include"
+				},
+				{
+					"backtrace" : 4,
+					"isSystem" : true,
+					"path" : "/home/zhus/Desktop/biofaston/.venv/lib/python3.13/site-packages/nanobind/ext/robin_map/include"
+				}
+			],
+			"language" : "CXX",
+			"languageStandard" : 
+			{
+				"backtraces" : 
+				[
+					11
+				],
+				"standard" : "20"
+			},
+			"sourceIndexes" : 
+			[
+				58,
+				59,
+				60,
+				61,
+				62,
+				63,
+				64,
+				66,
+				67,
+				68,
+				69
+			]
+		}
+	],
+	"id" : "nanobind-static-ps::@6890427a1f51a3e7e1df",
+	"interfaceLinkLibraries" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "tsl::robin_map::@6890427a1f51a3e7e1df"
+		}
+	],
+	"linkLibraries" : 
+	[
+		{
+			"backtrace" : 4,
+			"id" : "tsl::robin_map::@6890427a1f51a3e7e1df"
+		}
+	],
+	"name" : "nanobind-static-ps",
+	"nameOnDisk" : "libnanobind-static-ps.a",
+	"paths" : 
+	{
+		"build" : ".",
+		"source" : "."
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "Header Files",
+			"sourceIndexes" : 
+			[
+				0,
+				1,
+				2,
+				3,
+				4,
+				5,
+				6,
+				7,
+				8,
+				9,
+				10,
+				11,
+				12,
+				13,
+				14,
+				15,
+				16,
+				17,
+				18,
+				19,
+				20,
+				21,
+				22,
+				23,
+				24,
+				25,
+				26,
+				27,
+				28,
+				29,
+				30,
+				31,
+				32,
+				33,
+				34,
+				35,
+				36,
+				37,
+				38,
+				39,
+				40,
+				41,
+				42,
+				43,
+				44,
+				45,
+				46,
+				47,
+				48,
+				49,
+				50,
+				51,
+				52,
+				53,
+				54,
+				55,
+				56,
+				57,
+				65
+			]
+		},
+		{
+			"name" : "Source Files",
+			"sourceIndexes" : 
+			[
+				58,
+				59,
+				60,
+				61,
+				62,
+				63,
+				64,
+				66,
+				67,
+				68,
+				69
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/eval.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/make_iterator.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nanobind.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_backend.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_backend_slots.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_accessor.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_attr.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_call.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_cast.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_class.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_defs.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_descr.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_error.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_func.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_misc.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_platform.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_python.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_traits.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_tuple.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/nb_types.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/ndarray.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/trampoline.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/typing.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/operators.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/array.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/bind_map.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/bind_vector.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/chrono.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/complex.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/detail/nb_array.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/detail/nb_dict.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/detail/nb_list.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/detail/nb_optional.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/detail/nb_set.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/detail/traits.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/filesystem.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/function.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/list.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/map.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/optional.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/pair.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/set.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/shared_ptr.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/string.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/string_view.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/tuple.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/unique_ptr.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/unordered_map.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/unordered_set.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/variant.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/vector.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/stl/wstring.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/eigen/dense.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/eigen/sparse.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/include/nanobind/eigen/tensor.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/buffer.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/hash.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_internals.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_internals.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_func.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_type.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_enum.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_ndarray.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_static_property.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_datetime.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/nb_ft.h",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/common.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/error.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/trampoline.cpp",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 3,
+			"backtraces" : 
+			[
+				3
+			],
+			"compileGroupIndex" : 0,
+			"path" : ".venv/lib/python3.13/site-packages/nanobind/src/implicit.cpp",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "STATIC_LIBRARY"
+}

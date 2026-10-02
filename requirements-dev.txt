@@ -1,0 +1,23 @@
+# Build and test environment for the C++ core (step 1.1).
+#
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r requirements-dev.txt
+#     .venv/bin/pip install -e .
+#     .venv/bin/pytest
+#
+# The same .venv is used by bench/requirements.txt; installing build tools into
+# it does not move a benchmark number, and one environment is one thing to
+# remember.  See bench/README.md for the corpus.
+#
+# These are pinned to the versions the scaffold was actually built and tested
+# with.  pyproject.toml carries the ranges instead, because a wheel should build
+# on whatever is current rather than on one developer's snapshot -- the two
+# deliberately differ, and CI builds with the ranges to prove they still work.
+#
+# nanobind 3.x is what sets the Python floor at 3.10 (3.1.0 declares
+# Requires-Python >=3.10); that floor is declared in pyproject.toml as well.
+nanobind==3.1.0
+scikit-build-core==1.1.1
+cmake==4.4.3
+ninja==1.13.2
+pytest==9.1.1

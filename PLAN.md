@@ -15,9 +15,18 @@ See [README.md](README.md) for the pitch and principles.
 - [x] 0.3 Benchmark runner (`bench/run.py`): Biopython vs naive Python vs
       pysam/pyfaidx, median-of-5, correctness-gated — 20 rows, all validated.
 - [x] 0.4 Profiling (`bench/profile_paths.py`, `bench/profiling.md`): a third
-      to two thirds of every Biopython row is Python bytecode in `Bio/**`.
+      to two thirds of every Biopython row is Python bytecode in `Bio/**`;
+      charted as `misc/profile-share.png`.
 - [x] 0.5 Ranked targets (`bench/targets.md`); **Gate G1 passed** — FASTQ/FASTA
-      confirmed as the flagship from data.
+      confirmed as the flagship from data.  Charted as `misc/g1-ranking.png`.
+
+**Phase 0 is closed.**  All of the above is committed and reproducible from the
+commands in [bench/README.md](bench/README.md); the numbers are the ones stored
+in `bench/results/latest.json`, and `bench/targets.md` carries the run-to-run
+variance so a re-measurement is not mistaken for a regression.
+
+**Next:** Phase 1, step 1.1 — the C++ core scaffold.  No library code exists
+yet, by design: the harness came first.
 
 ## Phase 0 — Evidence (weeks 1–2)
 
@@ -27,8 +36,8 @@ Goal: replace intuition with a ranked, reproducible list of targets.
 |---|---|---|---|
 | 0.2 | Dataset generator (seeded): FASTQ 1M×150bp, gzipped variant, multi-line FASTQ edge corpus, quality-encoding edge cases, genome-sized FASTA | `bench/data/` | anyone can regenerate the exact corpus from one command ✅ |
 | 0.3 | Benchmark runner: Biopython `SeqIO` vs naive pure-Python vs installed C-backed libs (`pysam`, `pyfaidx`); median-of-N runs, MB/s | `bench/run.py`, `bench/results/*.json` | one command produces the full comparison table ✅ |
-| 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | `bench/profile_paths.py`, `bench/profiling.md` | top hotspots named with % share ✅ |
-| 0.5 | Ranked targets: *workload → Biopython time → best alternative → stolen gap* | `bench/targets.md` | ranking exists with evidence behind every row ✅ |
+| 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | `bench/profile_paths.py`, `bench/profiling.md`, `bench/plot_profile.py` | top hotspots named with % share ✅ |
+| 0.5 | Ranked targets: *workload → Biopython time → best alternative → stolen gap* | `bench/targets.md`, `bench/plot_g1.py` | ranking exists with evidence behind every row ✅ |
 
 **Gate G1:** confirm flagship choice from data (expected: FASTQ/FASTA).
 **Passed 2026-10-02.** The two largest measured gaps are both in that scope —

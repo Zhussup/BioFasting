@@ -1,0 +1,75 @@
+[build-system]
+# cmake and ninja are listed here, not only in requirements-dev.txt, so that a
+# plain `pip install .` works on a bare machine.  nanobind 3.x sets the Python
+# floor at 3.10, which is why requires-python below says 3.10 and not 3.9.
+requires = [
+    "scikit-build-core>=1.1,<2",
+    "nanobind>=3.1,<4",
+    "cmake>=3.15",
+    "ninja",
+]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "biofasting"
+version = "0.0.1"
+description = "A C/C++-backed core for sequence bioinformatics, built to close the hot-path gap Biopython leaves open."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Zhussup" }]
+keywords = ["bioinformatics", "fastq", "fasta", "sequence", "performance"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+# No runtime dependencies yet by design: numpy arrives with the zero-copy views
+# in step 1.3, and nothing before that needs it.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/Zhussup/BioFasting"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.15"
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["src/biofasting"]
+sdist.include = [
+    "CMakeLists.txt",
+    "src/**",
+    "tests/**",
+    "requirements-dev.txt",
+]
+sdist.exclude = ["bench/data*", "misc", "inventory/*.csv", "inventory/*.json"]
+
+# Recompile the extension when a C++ source changes, so the edit/test loop is
+# `pytest` and nothing else.  This needs cmake and ninja importable in the
+# environment, which requirements-dev.txt provides.
+editable.rebuild = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+filterwarnings = ["error"]
+
+[tool.cibuildwheel]
+# Wheels are built on tags and on demand, never on every push: an emulated
+# linux-aarch64 build of four interpreters costs far more than it catches.
+build = "cp310-* cp311-* cp312-* cp313-*"
+test-requires = ["pytest"]
+test-command = "pytest {project}/tests"
+# musllinux is deliberately absent for now -- see bench/README.md and PLAN.md.
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"]
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]

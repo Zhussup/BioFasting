@@ -120,14 +120,14 @@ than silent until the end.
 `Bio.SeqIO.index` has no slice-level random access: an index entry is a
 whole-record byte offset, so fetching 150 bp out of the middle of a record
 parses **the entire record** and builds a `SeqRecord` from it.  On this corpus
-`chr1` is 40 Mbp, which makes one 150 bp fetch cost ~150 ms — and the naive
-`--random-accesses 20000` that this harness first used meant 20,000 × 0.15 s ≈
+`chr1` is 40 Mbp, which makes one 150 bp fetch cost ~160 ms — and the naive
+`--random-accesses 20000` that this harness first used meant 20,000 × 0.16 s ≈
 50 minutes *per pass*, six passes per run.  That is what the default access
 count and the per-access column exist to prevent.
 
 So the workload reports milliseconds per access, at a default of 100 accesses,
 and the number it produces is the real one: fetching a 150 bp slice costs
-~150 ms through `SeqIO.index` and single-digit microseconds through pyfaidx
+~160 ms through `SeqIO.index` and single-digit microseconds through pyfaidx
 (~1.5 µs for the fetch itself, measured directly).  Both rows return the same
 bytes and are digest-gated, so this is a design difference, not a harness
 artefact — a FASTA index that stores record offsets cannot serve a slice
@@ -188,7 +188,7 @@ by naming the functions that hold the time:
 .venv/bin/py-spy record --format raw -o /tmp/prof.raw --rate 200 \
     -- .venv/bin/python bench/profile_paths.py --workload fastq:biopython-seqio
 .venv/bin/python bench/profile_paths.py --pyspy /tmp/prof.raw \
-    --pyspy-mark biopython-seqio
+    --pyspy-mark consume
 ```
 
 Path names are `<group>:<implementation>` and come straight from the runner's
@@ -202,6 +202,28 @@ are inflated by instrumentation and must never be compared to `run.py`; `py-spy`
 samples the uninstrumented process and so sees time inside C extensions, which
 `cProfile` charges to whichever Python frame called them.  Findings are written
 up in `bench/profiling.md`.
+
+## Charts
+
+The images in the top-level README are rendered from these same numbers, so a
+picture cannot drift away from the table it illustrates — the tables stay the
+data source:
+
+```sh
+.venv/bin/python bench/plot_whythis.py    # -> misc/why-this-exists.png
+.venv/bin/python bench/plot_g1.py         # -> misc/g1-ranking.png
+.venv/bin/python bench/plot_profile.py    # -> misc/profile-share.png
+```
+
+`plot_g1.py` carries the ranking rows and `plot_profile.py` the profiling shares
+verbatim from `targets.md` and `profiling.md`.  matplotlib is a chart
+dependency only — `run.py` does not need it (see `requirements.txt`).
+
+Charts are written to `misc/`, which is gitignored except for the files the
+README actually references: an unreferenced design asset stays local.  Adding a
+chart to the README therefore means adding a `!misc/<name>.png` exception to
+`.gitignore` as well, or the image renders as a broken link on GitHub while
+looking fine on the machine that produced it.
 
 ## Environment notes
 
