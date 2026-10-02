@@ -1,5 +1,9 @@
 # BioFasting
 
+<p align="center">
+  <img src="images/ascii-art%20%283%29.png" alt="BioFasting" width="620">
+</p>
+
 A C/C++-backed core library for sequence bioinformatics, built to close the
 7–10× performance gap Biopython leaves open on hot paths — aiming to become the
 *numpy of bioinformatics*: a fast substrate that other tools build on, not
@@ -76,15 +80,9 @@ python3 inventory/scan_biopython.py
 
 ## Roadmap
 
-- [x] Phase 0a — API inventory (this repo)
-- [ ] Phase 0b — bench harness: representative workloads + profiler-driven
-      bottleneck ranking
-- [ ] Phase 1 — flagship module: fast FASTQ/FASTA stack (C core, SIMD line
-      scanning, `libdeflate`), cross-validated against Biopython
-- [ ] Phase 2 — interop shims (`SeqRecord`-compatible I/O), Arrow interop;
-      expand hot-path-first
-- [ ] Deferred — optional accelerated backends (CUDA/HIP/Metal) behind the
-      kernel dispatch interface
+Phase 0 (evidence) → Phase 1 (FASTQ/FASTA flagship core) → Phase 2 (expansion)
+→ Phase 3 (ecosystem). Detailed steps, gates, decisions log and risk table:
+see [PLAN.md](PLAN.md).
 
 ## License
 

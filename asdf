@@ -1,7 +1,0 @@
-BioFasting - is a library that is intended to replace the existing one called "BioPython" because of its slow performance.
-
-First step of creating library is: List all of existing classes/methods/functions/constants and analyze them. 
-                                   find weaknesses and factors that are slowing down performance or effect it
-                                   in any other way.
-
-Second Phase is: Create a repo with list of issues and to start solving one-by-one
