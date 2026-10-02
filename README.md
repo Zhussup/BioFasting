@@ -4,6 +4,14 @@
   <img src="misc/biofasting.gif" alt="BioFasting" width="620">
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
+  <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/status-pre--alpha-orange" alt="pre-alpha">
+  <img src="https://img.shields.io/badge/tested--against-Biopython%201.88-4c9349" alt="tested against Biopython 1.88">
+  <img src="https://img.shields.io/badge/license-TBD-lightgrey" alt="License TBD">
+</p>
+
 A C/C++-backed core library for sequence bioinformatics, built to close the
 7–10× performance gap Biopython leaves open on hot paths — aiming to become the
 *numpy of bioinformatics*: a fast substrate that other tools build on, not
