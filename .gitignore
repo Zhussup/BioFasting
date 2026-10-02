@@ -1,7 +1,7 @@
 # Local design assets, intentionally not committed
-images/*
-# Keep only the README banner art
-!images/ascii-art (3).png
+misc/*
+# Keep only the README banner (animated GIF)
+!misc/biofasting.gif
 
 # Generated benchmark corpora -- large, and regenerable from one command:
 #   python3 bench/gen_data.py

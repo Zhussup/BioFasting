@@ -1,7 +1,7 @@
 # BioFasting
 
 <p align="center">
-  <img src="images/ascii-art%20%283%29.png" alt="BioFasting" width="620">
+  <img src="misc/biofasting.gif" alt="BioFasting" width="620">
 </p>
 
 A C/C++-backed core library for sequence bioinformatics, built to close the
