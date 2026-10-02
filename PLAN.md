@@ -20,8 +20,8 @@ Goal: replace intuition with a ranked, reproducible list of targets.
 | # | Step | Output | Done when |
 |---|---|---|---|
 | 0.2 | Dataset generator (seeded): FASTQ 1M×150bp, gzipped variant, multi-line FASTQ edge corpus, quality-encoding edge cases, genome-sized FASTA | `bench/data/` | anyone can regenerate the exact corpus from one command ✅ |
-| 0.3 | Benchmark runner: Biopython `SeqIO` vs naive pure-Python vs installed C-backed libs (`pysam`, `pyfaidx`); median-of-N runs, MB/s | `bench/run.py`, `bench/results/*.json` | one command produces the full comparison table |
-| 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | profiling notes | top hotspots named with % share |
+| 0.3 | Benchmark runner: Biopython `SeqIO` vs naive pure-Python vs installed C-backed libs (`pysam`, `pyfaidx`); median-of-N runs, MB/s | `bench/run.py`, `bench/results/*.json` | one command produces the full comparison table ✅ |
+| 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | `bench/profile_paths.py`, `bench/profiling.md` | top hotspots named with % share |
 | 0.5 | Ranked targets: *workload → Biopython time → best alternative → stolen gap* | `bench/targets.md` | ranking exists with evidence behind every row |
 
 **Gate G1:** confirm flagship choice from data (expected: FASTQ/FASTA).

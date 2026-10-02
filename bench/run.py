@@ -136,6 +136,11 @@ class Impl:
     verify: Callable[[], Iterator]
     kind: str = "records"  # "records" | "stream"
     note: str = ""
+    # A baseline does not produce records at all -- decompression with no parser
+    # above it, say.  It has no parse output to compare against the reference,
+    # so it is never digest-gated and never quotable as a speedup; it exists to
+    # place a floor under the rows that do parse.
+    baseline: bool = False
 
 
 @dataclass
@@ -146,6 +151,9 @@ class Workload:
     impls: list[Impl] = field(default_factory=list)
     expected_items: int | None = None
     source: str = ""
+    # Set when one "item" is one random access, where latency per access is the
+    # meaningful number and throughput in MB/s hides the real cost.
+    per_access: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -277,9 +285,9 @@ def make_decompression_impls(path: Path) -> list[Impl]:
         return read
 
     return [
-        Impl("gzip-stream-only", gzip_only(), gzip_only(), kind="stream",
+        Impl("gzip-stream-only", gzip_only(), gzip_only(), kind="stream", baseline=True,
              note="decompression with no parsing above it: this file's floor"),
-        Impl("zlib-raw-only", zlib_only(), zlib_only(), kind="stream",
+        Impl("zlib-raw-only", zlib_only(), zlib_only(), kind="stream", baseline=True,
              note="same, minus the gzip.GzipFile Python layer"),
     ]
 
@@ -590,37 +598,60 @@ def digest(impl: Impl) -> tuple[int, int, str]:
     return items, bases, hasher.hexdigest()
 
 
-def time_impl(impl: Impl, repeats: int, warmups: int = 1) -> list[float]:
-    for _ in range(warmups):
-        consume(impl)
+def time_impl(impl: Impl, repeats: int, max_pass: float | None = None
+              ) -> tuple[list[float], bool, tuple[int, int]]:
+    """Time ``impl``; return the sorted samples, a truncation flag, and counts.
+
+    The warmup pass is timed too, but only so that a pathologically slow
+    implementation can be caught before it burns the whole run: if one pass
+    exceeds ``max_pass`` seconds the warmup sample is reported alone and the
+    repeats are skipped.  That is a degraded measurement -- the row is flagged
+    as truncated rather than quietly presented as a median of N.
+    """
+    start = time.perf_counter()
+    items, bases = consume(impl)
+    warmup = time.perf_counter() - start
+    if max_pass is not None and warmup > max_pass:
+        return [warmup], True, (items, bases)
     times = []
     for _ in range(repeats):
         start = time.perf_counter()
         consume(impl)
         times.append(time.perf_counter() - start)
-    return sorted(times)
+    return sorted(times), False, (items, bases)
 
 
-def run_workload(workload: Workload, repeats: int) -> list[dict]:
-    print(f"\n== {workload.group}  ({workload.description})")
+def run_workload(workload: Workload, repeats: int,
+                 max_pass: float | None = None) -> list[dict]:
+    print(f"\n== {workload.group}  ({workload.description})", flush=True)
     reference: str | None = None
     rows: list[dict] = []
     for impl in workload.impls:
-        try:
-            items, bases, ref_digest = digest(impl)
-        except Exception as exc:
-            print(f"   {impl.label:26} SKIPPED ({type(exc).__name__}: {exc})")
-            rows.append({"group": workload.group, "impl": impl.label, "valid": False,
-                         "error": f"{type(exc).__name__}: {exc}", "note": impl.note})
-            continue
-        if reference is None:
-            reference = ref_digest
-        valid = ref_digest == reference
         note = impl.note
-        if workload.expected_items is not None and items != workload.expected_items:
-            valid = False
-            note = f"{note} | {items} items != expected {workload.expected_items}"
-        times = time_impl(impl, repeats)
+        if impl.baseline:
+            # Structurally different output (chunks, not records): there is
+            # nothing to compare against the parse reference.  Report the time
+            # and say plainly that this row is a floor, not a candidate.
+            times, truncated, (items, bases) = time_impl(impl, repeats, max_pass=max_pass)
+            valid = None
+            note = f"{note} | baseline: no parse output to verify"
+        else:
+            try:
+                items, bases, ref_digest = digest(impl)
+            except Exception as exc:
+                print(f"   {impl.label:26} SKIPPED ({type(exc).__name__}: {exc})", flush=True)
+                rows.append({"group": workload.group, "impl": impl.label, "valid": False,
+                             "error": f"{type(exc).__name__}: {exc}", "note": impl.note})
+                continue
+            if reference is None:
+                reference = ref_digest
+            valid = ref_digest == reference
+            if workload.expected_items is not None and items != workload.expected_items:
+                valid = False
+                note = f"{note} | {items} items != expected {workload.expected_items}"
+            times, truncated, _ = time_impl(impl, repeats, max_pass=max_pass)
+        if truncated:
+            note = f"{note} | TRUNCATED: one pass exceeded {max_pass:.0f}s budget"
         median = statistics.median(times)
         megabytes = workload.logical_bytes / 1e6
         row = {
@@ -631,16 +662,22 @@ def run_workload(workload: Workload, repeats: int) -> list[dict]:
             "median_s": round(median, 4),
             "min_s": round(times[0], 4),
             "max_s": round(times[-1], 4),
+            "samples": len(times),
+            "truncated": truncated,
             "mb_per_s": round(megabytes / median, 1) if median else None,
             "items_per_s": round(items / median) if median else None,
             "valid": valid,
             "note": note,
         }
+        if workload.per_access:
+            row["ms_per_access"] = round(median * 1000 / items, 4)
         rows.append(row)
+        extra = f"  {row['ms_per_access']:9.3f} ms/access" if workload.per_access else ""
+        status = "baseline" if valid is None else ("ok" if valid else "INVALID")
         print(f"   {impl.label:26} {median:8.3f} s  {row['mb_per_s']:8.1f} MB/s  "
-              f"{row['items_per_s']:>13,} /s  {'ok' if valid else 'INVALID'}")
-    if reference is not None and not all(r.get("valid") for r in rows):
-        print("   !! digest mismatch: never quote a speedup from an INVALID row")
+              f"{row['items_per_s']:>13,} /s{extra}  {status}", flush=True)
+    if reference is not None and any(r.get("valid") is False for r in rows):
+        print("   !! digest mismatch: never quote a speedup from an INVALID row", flush=True)
     return rows
 
 
@@ -707,11 +744,17 @@ def build_workloads(args, backends: dict, manifest: dict) -> list[Workload]:
         make_fasta_impls(data / fasta, backends), None, source=fasta))
 
     if not args.quick:
-        accesses, span = 20_000, 150
+        # Deliberately few accesses: Bio.SeqIO.index has no slice-level random
+        # access, so every access materialises the *whole* record -- on this
+        # corpus chr1 alone is 40 Mbp.  A large access count measures the cost
+        # of rebuilding 40 Mbp of Seq per 150 bp fetch and takes tens of
+        # minutes per pass.  Latency per access is the honest metric here, and
+        # the gap it shows is real (see bench/README.md).
+        accesses, span = args.random_accesses, 150
         workloads.append(Workload(
             "fasta-random", f"{fasta}, {accesses:,} slices of {span} bp at fixed positions",
             accesses * span, make_fasta_random_impls(data / fasta, backends, accesses, span),
-            accesses, source=fasta))
+            accesses, source=fasta, per_access=True))
 
     Bio = backends["Bio"]
     reads = []
@@ -729,12 +772,24 @@ def build_workloads(args, backends: dict, manifest: dict) -> list[Workload]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Progress is printed as each row lands; without this, a redirected run
+    # shows nothing until it finishes, which makes a slow run look hung.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     parser = argparse.ArgumentParser(prog="run.py", description="BioFasting benchmark runner")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--json", type=Path, default=None,
                         help="where to write results (default: bench/results/latest.json)")
     parser.add_argument("--repeat", type=int, default=5, help="timed runs per implementation")
     parser.add_argument("--quick", action="store_true", help="use the test-sized files")
+    parser.add_argument("--random-accesses", type=int, default=100,
+                        help="slices for the fasta-random workload (default: 100; the "
+                             "Biopython row costs ~0.15 s per access, so this scales "
+                             "the run's runtime almost linearly)")
+    parser.add_argument("--max-pass-seconds", type=float, default=60.0,
+                        help="skip repeats when a single pass exceeds this (default: 60)")
     parser.add_argument("--only", action="append", default=None,
                         help="run only these groups (repeatable)")
     parser.add_argument("--list", action="store_true", help="list workloads and exit")
@@ -778,7 +833,8 @@ def main(argv: list[str] | None = None) -> int:
     started = time.time()
     results: list[dict] = []
     for workload in workloads:
-        results.extend(run_workload(workload, args.repeat))
+        results.extend(run_workload(workload, args.repeat,
+                                    max_pass=args.max_pass_seconds))
 
     out_path = args.json or (DEFAULT_RESULTS / "latest.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -791,7 +847,9 @@ def main(argv: list[str] | None = None) -> int:
     }, indent=2) + "\n")
 
     print(f"\n{len(results)} rows in {time.time() - started:.1f}s -> {out_path}")
-    invalid = [r for r in results if not r.get("valid")]
+    # ``valid`` is None for baselines (nothing to verify against a parse), so
+    # only an explicit False is a correctness failure.
+    invalid = [r for r in results if r.get("valid") is False]
     if invalid:
         print(f"WARNING: {len(invalid)} row(s) did not validate:")
         for row in invalid:

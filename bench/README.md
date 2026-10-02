@@ -97,7 +97,11 @@ python3 -m venv .venv
 .venv/bin/python bench/run.py              # full corpus, median of 5
 .venv/bin/python bench/run.py --list       # workloads and implementations
 .venv/bin/python bench/run.py --only fastq-gzip --repeat 9
+.venv/bin/python bench/run.py --only fasta-random --random-accesses 20
 ```
+
+Progress is printed a row at a time, so a long run is visibly moving rather
+than silent until the end.
 
 `bench/run.py` measures, on the corpus above:
 
@@ -106,9 +110,34 @@ python3 -m venv .venv
   pure-Python parser, `pysam.FastxFile`, plus decompression-only baselines
   (`gzip` and raw `zlib`) for the compressed case;
 - `fasta-scan` — the same shape for plain multi-record FASTA;
-- `fasta-random` — 20,000 fixed 150 bp slices, pyfaidx vs `SeqIO.index`;
+- `fasta-random` — fixed 150 bp slices, pyfaidx vs `SeqIO.index`, reported as
+  **latency per access** rather than MB/s (see below);
 - `ops-revcomp`, `ops-gc` — the in-memory operations from the draft table in the
   top-level README.
+
+### Random access is measured in latency, not throughput
+
+`Bio.SeqIO.index` has no slice-level random access: an index entry is a
+whole-record byte offset, so fetching 150 bp out of the middle of a record
+parses **the entire record** and builds a `SeqRecord` from it.  On this corpus
+`chr1` is 40 Mbp, which makes one 150 bp fetch cost ~150 ms — and the naive
+`--random-accesses 20000` that this harness first used meant 20,000 × 0.15 s ≈
+50 minutes *per pass*, six passes per run.  That is what the default access
+count and the per-access column exist to prevent.
+
+So the workload reports milliseconds per access, at a default of 100 accesses,
+and the number it produces is the real one: fetching a 150 bp slice costs
+~150 ms through `SeqIO.index` and single-digit microseconds through pyfaidx
+(~1.5 µs for the fetch itself, measured directly).  Both rows return the same
+bytes and are digest-gated, so this is a design difference, not a harness
+artefact — a FASTA index that stores record offsets cannot serve a slice
+without rebuilding the record, and that gap is a Phase 1 target.
+
+Every implementation is additionally held to a per-pass budget
+(`--max-pass-seconds`, default 60).  If one pass exceeds it, the repeats are
+skipped, the single warmup sample is reported, and the row is flagged
+`TRUNCATED` — a degraded measurement is labelled as one instead of being
+presented as a median of N.
 
 ### How to read the numbers
 
@@ -125,6 +154,13 @@ and checked against the Biopython reference.  A row that disagrees is printed as
 `INVALID` and must never be quoted as a speedup.  If a parser is fast and wrong,
 the table says so instead of rewarding it.
 
+The two decompression rows are the exception, and are labelled `baseline`
+instead: they emit 1 MiB chunks rather than records, so there is no parse output
+to compare against the reference.  Digest-gating them would report a permanent
+false `INVALID`, which would in turn make the end-of-run warning meaningless.
+They place a floor under the parsing rows and are never quotable as an
+alternative to Biopython.
+
 Two measurement traps this harness went out of its way to avoid, because both
 would have produced a flattering fake result:
 
@@ -140,6 +176,32 @@ would have produced a flattering fake result:
 Results are written to `bench/results/latest.json` (gitignored — they are
 machine-specific).  The durable, human-readable ranking is `bench/targets.md`,
 produced in step 0.5.
+
+## Profiling (step 0.4)
+
+The runner says how much slower Biopython is; `bench/profile_paths.py` says why,
+by naming the functions that hold the time:
+
+```sh
+.venv/bin/python bench/profile_paths.py --list
+.venv/bin/python bench/profile_paths.py --all --repeat 1 --top 12
+.venv/bin/py-spy record --format raw -o /tmp/prof.raw --rate 200 \
+    -- .venv/bin/python bench/profile_paths.py --workload fastq:biopython-seqio
+.venv/bin/python bench/profile_paths.py --pyspy /tmp/prof.raw \
+    --pyspy-mark biopython-seqio
+```
+
+Path names are `<group>:<implementation>` and come straight from the runner's
+own factories, so the loop being profiled is the loop that was measured.
+
+It reuses the runner's own workload factories, so the code being profiled is the
+code that was measured.  Two views are available and they answer different
+questions: `cProfile` attributes time to Python frames and reports the share
+that is interpreter work — the part a C core deletes outright — but its seconds
+are inflated by instrumentation and must never be compared to `run.py`; `py-spy`
+samples the uninstrumented process and so sees time inside C extensions, which
+`cProfile` charges to whichever Python frame called them.  Findings are written
+up in `bench/profiling.md`.
 
 ## Environment notes
 
