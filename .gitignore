@@ -1,8 +1,10 @@
 # Local design assets, intentionally not committed
 misc/*
-# Keep only README-referenced assets (banner + why-this-exists chart)
+# Keep only the assets the README references (banner + the charts)
 !misc/biofasting.gif
 !misc/why-this-exists.png
+!misc/g1-ranking.png
+!misc/profile-share.png
 
 # Generated benchmark corpora -- large, and regenerable from one command:
 #   python3 bench/gen_data.py
