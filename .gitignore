@@ -2,3 +2,12 @@
 images/*
 # Keep only the README banner art
 !images/ascii-art (3).png
+
+# Generated benchmark corpora -- large, and regenerable from one command:
+#   python3 bench/gen_data.py
+# MANIFEST.json inside them carries a SHA-256 per artifact.
+bench/data/
+bench/data-quick/
+
+__pycache__/
+*.py[cod]

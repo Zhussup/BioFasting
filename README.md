@@ -9,7 +9,8 @@ A C/C++-backed core library for sequence bioinformatics, built to close the
 *numpy of bioinformatics*: a fast substrate that other tools build on, not
 another API clone on top of it.
 
-**Status:** pre-alpha, inventory phase. No library code yet.
+**Status:** pre-alpha, Phase 0 (evidence). No library code yet — the API
+inventory and a reproducible benchmark corpus come first.
 
 ## Why this exists
 
@@ -61,6 +62,10 @@ inventory/
   INDEX.md                    # per-package summary of the scan
   biopython_inventory.csv     # 3,595 public API objects, one per row
   biopython_inventory.json    # full dump incl. private members and __all__
+bench/
+  gen_data.py                 # seeded, byte-reproducible corpus generator
+  README.md                   # what the corpus contains and why it is honest
+  data/                       # generated (gitignored) + MANIFEST.json checksums
 ```
 
 Regenerate the inventory any time (updates automatically with your installed
@@ -68,6 +73,14 @@ Biopython version):
 
 ```sh
 python3 inventory/scan_biopython.py
+```
+
+Regenerate the benchmark corpus — FASTQ 1M×150bp plus a gzip variant and a
+test-sized prefix, a 100 Mbp genome FASTA, and edge/malformed sets:
+
+```sh
+python3 bench/gen_data.py
+python3 bench/gen_data.py --verify   # re-check every SHA-256 in MANIFEST.json
 ```
 
 ## Key inventory facts (Biopython 1.88)

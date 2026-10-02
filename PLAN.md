@@ -8,6 +8,10 @@ See [README.md](README.md) for the pitch and principles.
 - [x] 0.1 API inventory of Biopython 1.88 (`inventory/`, 3,595 public
       objects, 284 modules, 156,755 LOC) + draft single-machine benchmarks
       showing a **7–10× gap** on hot paths.
+- [x] 0.2 Seeded corpus generator (`bench/gen_data.py`, `bench/README.md`):
+      FASTQ 1M×150bp + gzip variant + 10k prefix, genome FASTA, edge and
+      malformed sets; byte-reproducible (SHA-256 counter-mode randomness,
+      integer-only sampling) with a verified `MANIFEST.json`.
 
 ## Phase 0 — Evidence (weeks 1–2)
 
@@ -15,7 +19,7 @@ Goal: replace intuition with a ranked, reproducible list of targets.
 
 | # | Step | Output | Done when |
 |---|---|---|---|
-| 0.2 | Dataset generator (seeded): FASTQ 1M×150bp, gzipped variant, multi-line FASTQ edge corpus, quality-encoding edge cases, genome-sized FASTA | `bench/data/` | anyone can regenerate the exact corpus from one command |
+| 0.2 | Dataset generator (seeded): FASTQ 1M×150bp, gzipped variant, multi-line FASTQ edge corpus, quality-encoding edge cases, genome-sized FASTA | `bench/data/` | anyone can regenerate the exact corpus from one command ✅ |
 | 0.3 | Benchmark runner: Biopython `SeqIO` vs naive pure-Python vs installed C-backed libs (`pysam`, `pyfaidx`); median-of-N runs, MB/s | `bench/run.py`, `bench/results/*.json` | one command produces the full comparison table |
 | 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | profiling notes | top hotspots named with % share |
 | 0.5 | Ranked targets: *workload → Biopython time → best alternative → stolen gap* | `bench/targets.md` | ranking exists with evidence behind every row |
