@@ -1,0 +1,15 @@
+# Benchmark environment (PLAN.md step 0.3).
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r bench/requirements.txt
+#   .venv/bin/python bench/run.py
+#
+# Pinned to the versions the published numbers were measured with.  pysam and
+# pyfaidx are optional: bench/run.py degrades to the pure-Python and Biopython
+# comparisons, and says which backends were unavailable, when they are missing.
+#
+# biopython is a hard requirement -- it is the reference implementation the
+# verification digests are compared against.
+biopython==1.88
+pysam==0.24.1
+pyfaidx==0.9.0.4

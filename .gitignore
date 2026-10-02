@@ -9,5 +9,12 @@ images/*
 bench/data/
 bench/data-quick/
 
+# Benchmark results are machine-specific; re-derive them with bench/run.py.
+# The durable artifact is bench/targets.md (step 0.5).
+bench/results/
+
+# Local benchmark virtualenv (see bench/requirements.txt)
+.venv/
+
 __pycache__/
 *.py[cod]

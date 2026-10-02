@@ -64,6 +64,8 @@ inventory/
   biopython_inventory.json    # full dump incl. private members and __all__
 bench/
   gen_data.py                 # seeded, byte-reproducible corpus generator
+  run.py                      # benchmark runner (SeqIO vs naive vs pysam/pyfaidx)
+  requirements.txt            # pinned bench environment
   README.md                   # what the corpus contains and why it is honest
   data/                       # generated (gitignored) + MANIFEST.json checksums
 ```
@@ -81,6 +83,14 @@ test-sized prefix, a 100 Mbp genome FASTA, and edge/malformed sets:
 ```sh
 python3 bench/gen_data.py
 python3 bench/gen_data.py --verify   # re-check every SHA-256 in MANIFEST.json
+```
+
+Measure it — the runner refuses to report a time for an implementation whose
+output does not match Biopython's:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r bench/requirements.txt
+.venv/bin/python bench/run.py
 ```
 
 ## Key inventory facts (Biopython 1.88)

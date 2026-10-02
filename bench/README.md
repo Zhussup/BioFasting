@@ -89,6 +89,58 @@ The `malformed/*` notes record Biopython 1.88's exact reaction (error type and
 message) to each file.  Those notes are the expected-error baseline the
 differential tests in step 1.5 will assert against.
 
+## Benchmark runner
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r bench/requirements.txt
+.venv/bin/python bench/run.py              # full corpus, median of 5
+.venv/bin/python bench/run.py --list       # workloads and implementations
+.venv/bin/python bench/run.py --only fastq-gzip --repeat 9
+```
+
+`bench/run.py` measures, on the corpus above:
+
+- `fastq-plain` / `fastq-gzip` — `Bio.SeqIO.parse` (what people write),
+  `FastqGeneralIterator` (Biopython without `SeqRecord` construction), a naive
+  pure-Python parser, `pysam.FastxFile`, plus decompression-only baselines
+  (`gzip` and raw `zlib`) for the compressed case;
+- `fasta-scan` — the same shape for plain multi-record FASTA;
+- `fasta-random` — 20,000 fixed 150 bp slices, pyfaidx vs `SeqIO.index`;
+- `ops-revcomp`, `ops-gc` — the in-memory operations from the draft table in the
+  top-level README.
+
+### How to read the numbers
+
+Every implementation yields the same `(name, sequence, quality_len)` and the
+harness does identical minimal work on top of each, so differences come from
+parsing and not from the harness.  Times are the median of `--repeat` runs after
+one untimed warmup (which also warms the page cache).  `MB/s` is input
+consumed per second — for `fastq-gzip`, the *uncompressed* size, so its rows are
+on the same scale as `fastq-plain` and the decompression-only rows above them.
+
+**Rows are correctness-gated.**  Before anything is timed, each
+implementation's full output is hashed (quality compared as raw Phred values)
+and checked against the Biopython reference.  A row that disagrees is printed as
+`INVALID` and must never be quoted as a speedup.  If a parser is fast and wrong,
+the table says so instead of rewarding it.
+
+Two measurement traps this harness went out of its way to avoid, because both
+would have produced a flattering fake result:
+
+- **Header identity.** `SeqRecord.id` stops at the first space, while
+  `FastqGeneralIterator`, the naive parser and a rebuilt pysam header carry the
+  whole line.  Comparing them directly made the naive parser look 20% faster
+  *and* subtly wrong; the harness now compares full headers everywhere.
+- **pyfaidx coordinates.** pyfaidx 0.9 removed `__getitem__`/`__iter__` and made
+  `fetch(name, start, end)` **1-based and inclusive**, where 0.8 and earlier
+  took 0-based slices.  `PyfaidxAccess` probes which API is present and
+  normalises, so "pyfaidx" means the same work in either version.
+
+Results are written to `bench/results/latest.json` (gitignored — they are
+machine-specific).  The durable, human-readable ranking is `bench/targets.md`,
+produced in step 0.5.
+
 ## Environment notes
 
 The corpus is generated with the standard library only (`hashlib`, `gzip`,
