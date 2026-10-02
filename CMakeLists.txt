@@ -5,8 +5,14 @@
 #
 #     pip install -e .
 #
-# A bare `cmake -S . -B build` also works and is the faster loop while chasing a
-# compiler error, but it cannot install a wheel.
+# A bare cmake build is the faster loop while chasing a compiler error, but it
+# cannot install a wheel and it needs both tools on PATH plus nanobind's cmake
+# directory named explicitly -- verified, not assumed:
+#
+#     export PATH="$PWD/.venv/bin:$PATH"
+#     cmake -S . -B build/raw -G Ninja -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
+#           -Dnanobind_DIR="$(.venv/bin/python -c 'import nanobind; print(nanobind.cmake_dir())')"
+#     cmake --build build/raw
 #
 # Deliberate: no -march=native and no per-file ISA flags.  A wheel is built on
 # one machine and run on another, so the baseline binary has to be portable; ISA
@@ -41,6 +47,24 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # `-fmodules-ts` pass to every compile, so it is off.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+# Two of nanobind's defaults are wrong for this library, and both are named
+# rather than hard-coded so that build_info() can report which way they went and
+# so that flipping one is a configure flag instead of an edit.
+#
+# RELAX_MIN_SIZE: nanobind adds -Os on top of Release's -O3 to keep wheels small.
+# For a library whose whole purpose is throughput that is backwards.
+option(BIOFASTING_RELAX_MIN_SIZE "Compile for speed, not wheel size (-O3 not -Os)" ON)
+#
+# PROTECT_STACK: nanobind drops -fstack-protector, worth 1-2% at runtime and
+# ~10% of binary size.  A parser that will be pointed at untrusted files is the
+# wrong place to save that, so it is kept.  -DBIOFASTING_PROTECT_STACK=OFF
+# matches nanobind's default.
+option(BIOFASTING_PROTECT_STACK "Keep the stack protector on the C++ core" ON)
+#
+# WERROR: warnings as errors.  Off by default locally, so that a compiler
+# version bump does not become a hard blocker mid-debug; CI turns it on.
+option(BIOFASTING_WERROR "Treat warnings in our own sources as errors" OFF)
+
 find_package(Python 3.10 REQUIRED
   COMPONENTS Interpreter Development.Module
   OPTIONAL_COMPONENTS Development.SABIModule)
@@ -51,30 +75,34 @@ set(BIOFASTING_CORE_SOURCES
   src/core/build_info.cpp
   src/core/cpu_features.cpp)
 
-nanobind_add_module(_core
-  NB_STATIC
-  # nanobind's default is to add -Os on top of the Release -O3, to keep wheels
-  # small.  For a library whose entire purpose is throughput that is exactly
-  # backwards, so it is switched off here rather than discovered later as an
-  # unexplained few-percent gap against the C baseline.
-  NOMINSIZE
-  # nanobind also drops -fstack-protector by default, worth 1-2% at runtime and
-  # ~10% of binary size.  A parser that will be pointed at untrusted files is
-  # the wrong place to save that, so it is kept.  Remove this argument to match
-  # nanobind's default; the cost is small and measurable.
-  PROTECT_STACK
-  ${BIOFASTING_CORE_SOURCES})
+set(BIOFASTING_NANOBIND_ARGS NB_STATIC)
+if(BIOFASTING_RELAX_MIN_SIZE)
+  list(APPEND BIOFASTING_NANOBIND_ARGS NOMINSIZE)
+endif()
+if(BIOFASTING_PROTECT_STACK)
+  list(APPEND BIOFASTING_NANOBIND_ARGS PROTECT_STACK)
+endif()
+
+nanobind_add_module(_core ${BIOFASTING_NANOBIND_ARGS} ${BIOFASTING_CORE_SOURCES})
 
 # Warnings are ours only.  NB_STATIC compiles nanobind's own sources into this
 # target, and holding third-party code to -Werror would turn a nanobind patch
 # release into our build failure.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  set_source_files_properties(${BIOFASTING_CORE_SOURCES}
-    PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra")
+  set(BIOFASTING_CORE_FLAGS "-Wall;-Wextra")
   if(BIOFASTING_WERROR)
-    set_source_files_properties(${BIOFASTING_CORE_SOURCES}
-      PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror")
+    list(APPEND BIOFASTING_CORE_FLAGS "-Werror")
   endif()
+  # Stated explicitly rather than left to the distro.  GCC's own default is
+  # -fno-stack-protector; Debian and Ubuntu patch it to `strong`, macOS does
+  # not.  Relying on that would make build_info()'s "stack_protector: yes" true
+  # on the machine that built the wheel and false on the machine that reports
+  # from it, which is the wrong way round for a security claim.
+  if(BIOFASTING_PROTECT_STACK)
+    list(APPEND BIOFASTING_CORE_FLAGS "-fstack-protector-strong")
+  endif()
+  set_source_files_properties(${BIOFASTING_CORE_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "${BIOFASTING_CORE_FLAGS}")
 endif()
 
 target_include_directories(_core PRIVATE
@@ -105,9 +133,31 @@ if(NOT BIOFASTING_NANOBIND_VERSION)
   set(BIOFASTING_NANOBIND_VERSION "unknown")
 endif()
 
-set(BIOFASTING_CXX_FLAGS
+# Deliberately NOT reported as a single flag string.  Under scikit-build-core
+# and nanobind the interesting flags are per-target COMPILE_OPTIONS and
+# generator expressions, which resolve to nothing useful at configure time;
+# CMAKE_CXX_FLAGS itself is empty on a stock wheel.  Reporting it would put a
+# confidently empty "cxx_flags" field in every bug report.  What is reported
+# instead is the caller's global flags (non-empty only when someone passed
+# CMAKE_ARGS) plus the two build decisions above as named yes/no.
+set(BIOFASTING_EXTRA_CXX_FLAGS
   "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${CMAKE_BUILD_TYPE}}")
-string(STRIP "${BIOFASTING_CXX_FLAGS}" BIOFASTING_CXX_FLAGS)
+string(STRIP "${BIOFASTING_EXTRA_CXX_FLAGS}" BIOFASTING_EXTRA_CXX_FLAGS)
+if(NOT BIOFASTING_EXTRA_CXX_FLAGS)
+  set(BIOFASTING_EXTRA_CXX_FLAGS "none")
+endif()
+
+if(BIOFASTING_RELAX_MIN_SIZE)
+  set(BIOFASTING_RELAX_MIN_SIZE_REPORTED "yes (-O3, not -Os)")
+else()
+  set(BIOFASTING_RELAX_MIN_SIZE_REPORTED "no (nanobind's -Os)")
+endif()
+
+if(BIOFASTING_PROTECT_STACK)
+  set(BIOFASTING_PROTECT_STACK_REPORTED "yes (-fstack-protector-strong)")
+else()
+  set(BIOFASTING_PROTECT_STACK_REPORTED "no (nanobind default)")
+endif()
 
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/core/build_config.hpp.in"

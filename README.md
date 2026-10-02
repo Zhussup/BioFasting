@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white" alt="C++20">
-  <img src="https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/status-pre--alpha-orange" alt="pre-alpha">
   <img src="https://img.shields.io/badge/tested--against-Biopython%201.88-4c9349" alt="tested against Biopython 1.88">
   <img src="https://img.shields.io/badge/license-TBD-lightgrey" alt="License TBD">
@@ -17,10 +17,11 @@ A C/C++-backed core library for sequence bioinformatics, built to close the
 *numpy of bioinformatics*: a fast substrate that other tools build on, not
 another API clone on top of it.
 
-**Status:** pre-alpha, Phase 0 (evidence) **complete**. No library code yet — the
-API inventory, a reproducible benchmark corpus, and a profiled, ranked list of
-targets came first. Phase 1 (the FASTQ/FASTA core) starts from that ranking:
-see [bench/targets.md](bench/targets.md).
+**Status:** pre-alpha. Phase 0 (evidence) is **complete** and Phase 1 has begun:
+the C++ core builds, imports and reports its own build identity, but it contains
+**no kernels yet** — the FASTQ/FASTA parsers are step 1.2. Phase 1 starts from
+the ranking in [bench/targets.md](bench/targets.md), which is what made FASTQ
+and FASTA the flagship in the first place.
 
 ## Why this exists
 
@@ -102,6 +103,17 @@ in [bench/profiling.md](bench/profiling.md).
 ## Repository layout
 
 ```
+src/
+  biofasting/                 # the Python package
+    __init__.py               # public surface: version + build identity
+    _core.pyi                 # type stubs for the compiled extension
+    py.typed
+  core/                       # the C++ core
+    module.cpp                # nanobind module definition (deliberately thin)
+    build_info.{hpp,cpp}      # compile-time facts, for bug reports
+    cpu_features.{hpp,cpp}    # the runtime ISA ladder and its detection
+    build_config.hpp.in       # template CMake fills in with the build identity
+tests/                        # pytest suite; step 1.1 checks scaffold invariants
 inventory/
   scan_biopython.py           # rerunnable API inventory scanner
   INDEX.md                    # per-package summary of the scan
@@ -111,6 +123,7 @@ bench/
   gen_data.py                 # seeded, byte-reproducible corpus generator
   run.py                      # benchmark runner (SeqIO vs naive vs pysam/pyfaidx)
   profile_paths.py            # cProfile/py-spy over the runner's own paths
+  plot_whythis.py             # renders misc/why-this-exists.png from the draft table
   plot_g1.py                  # renders misc/g1-ranking.png from the ranking
   plot_profile.py             # renders misc/profile-share.png from the profiles
   requirements.txt            # pinned bench environment
@@ -119,7 +132,44 @@ bench/
   targets.md                  # step 0.5: the ranked target list (Gate G1)
   data/                       # generated (gitignored) + MANIFEST.json checksums
 misc/                         # rendered charts referenced by this README
+CMakeLists.txt                # build of the C++ extension
+pyproject.toml                # scikit-build-core, cibuildwheel, pytest config
+requirements-dev.txt          # pinned build and test environment
+.github/workflows/            # ci.yml (every push), wheels.yml (on a tag)
 ```
+
+## Build it
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+pip install --no-build-isolation -e .
+pytest
+```
+
+Then ask the build what it is — the answer is what a benchmark number has to be
+reported against to mean anything:
+
+```pycon
+>>> import biofasting
+>>> biofasting.build_info()
+{'version': '0.0.1', 'compiler': 'GNU 14.2.0', 'cxx_standard': '20', ...}
+>>> biofasting.cpu_levels()
+['baseline', 'sse4.2', 'avx2', 'avx512f']
+>>> biofasting.best_cpu_level()
+'avx2'
+```
+
+Two details of that sequence are load-bearing and both were found by it failing,
+not by reading docs. `source .venv/bin/activate` is required because the editable
+install rebuilds the extension on import and looks for `cmake` and `ninja` on
+`PATH`. `--no-build-isolation` is required because an isolated build configures
+the build directory with a `cmake` from a temporary environment that is deleted
+immediately afterwards. Both are spelled out in
+[requirements-dev.txt](requirements-dev.txt).
+
+## Regenerate the evidence
 
 Regenerate the inventory any time (updates automatically with your installed
 Biopython version):
@@ -137,10 +187,12 @@ python3 bench/gen_data.py --verify   # re-check every SHA-256 in MANIFEST.json
 ```
 
 Measure it — the runner refuses to report a time for an implementation whose
-output does not match Biopython's:
+output does not match Biopython's.  The same checked-out `.venv` from
+[Build it](#build-it) serves this; nothing here needs the build tools, so the
+plain path form is enough:
 
 ```sh
-python3 -m venv .venv && .venv/bin/pip install -r bench/requirements.txt
+.venv/bin/pip install -r bench/requirements.txt
 .venv/bin/python bench/run.py                     # the comparison table
 .venv/bin/python bench/profile_paths.py --all     # where the time goes
 .venv/bin/python bench/plot_g1.py                 # -> misc/g1-ranking.png

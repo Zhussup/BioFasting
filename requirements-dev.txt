@@ -1,9 +1,19 @@
 # Build and test environment for the C++ core (step 1.1).
 #
 #     python3 -m venv .venv
-#     .venv/bin/pip install -r requirements-dev.txt
-#     .venv/bin/pip install -e .
-#     .venv/bin/pytest
+#     source .venv/bin/activate          # needed: see the note below
+#     pip install -r requirements-dev.txt
+#     pip install --no-build-isolation -e .
+#     pytest
+#
+# Activation is not cosmetic.  With editable.rebuild = true, importing the
+# package runs `cmake --build` on the C++ sources, and it looks for cmake and
+# ninja on PATH -- `.venv/bin/pytest` alone does not put them there, and the
+# failure is a bare FileNotFoundError from inside scikit-build-core's import
+# hook.  --no-build-isolation matters too: an isolated build configures the
+# build directory with a cmake in a temporary environment that is deleted
+# straight afterwards, so the next import tries to re-run a binary that no
+# longer exists.
 #
 # The same .venv is used by bench/requirements.txt; installing build tools into
 # it does not move a benchmark number, and one environment is one thing to
@@ -21,3 +31,8 @@ scikit-build-core==1.1.1
 cmake==4.4.3
 ninja==1.13.2
 pytest==9.1.1
+# Release tooling, here so that the cibuildwheel configuration in pyproject.toml
+# can be validated locally without Docker:
+#     cibuildwheel --platform linux --print-build-identifiers
+build==1.6.1
+cibuildwheel==4.2.1

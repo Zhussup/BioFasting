@@ -19,5 +19,17 @@ bench/results/
 # Local benchmark virtualenv (see bench/requirements.txt)
 .venv/
 
+# Build artifacts of the C++ core.  Never commit a compiled extension: it is
+# architecture- and interpreter-specific, and it hides a broken build by making
+# the import succeed on the machine that produced it.
+build/
+dist/
+wheelhouse/
+_skbuild/
+*.so
+*.pyd
+*.egg-info/
+
 __pycache__/
 *.py[cod]
+.pytest_cache/

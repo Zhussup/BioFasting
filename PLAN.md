@@ -20,13 +20,26 @@ See [README.md](README.md) for the pitch and principles.
 - [x] 0.5 Ranked targets (`bench/targets.md`); **Gate G1 passed** — FASTQ/FASTA
       confirmed as the flagship from data.  Charted as `misc/g1-ranking.png`.
 
+- [ ] 1.1 C++ core scaffold (`src/`, nanobind, CMake, `tests/`, CI,
+      cibuildwheel): **written and verified locally, not yet confirmed in CI.**
+      The extension builds through scikit-build-core, imports, and reports its
+      own build identity (`version`, compiler, flags, target arch) alongside a
+      runtime ISA ladder; 16 tests pass; a real wheel (~61 KB) and sdist
+      (~67 KB) both build, and each installs and passes the suite in a fresh
+      virtualenv, including a wheel rebuilt *from* the sdist.  Those sizes are
+      approximate on purpose: the sdist carries the docs, so it moves with
+      every README edit.  What is missing is the second half of the Done-when:
+      the workflows are written but have never executed, and that needs a push.
+      Nothing here should be read as "CI is green".
+
 **Phase 0 is closed.**  All of the above is committed and reproducible from the
 commands in [bench/README.md](bench/README.md); the numbers are the ones stored
 in `bench/results/latest.json`, and `bench/targets.md` carries the run-to-run
 variance so a re-measurement is not mistaken for a regression.
 
-**Next:** Phase 1, step 1.1 — the C++ core scaffold.  No library code exists
-yet, by design: the harness came first.
+**Next:** step 1.2 — the FASTQ parser kernel, the first thing to use the
+dispatch interface step 1.1 put in place.  No library code exists yet, by
+design: the harness came first, and now the scaffold it hangs off.
 
 ## Phase 0 — Evidence (weeks 1–2)
 
@@ -90,6 +103,10 @@ competitors). Scope boundary: sequence core only — **no SAM/CRAM**
 | 2026-10-02 | **Flagship = FASTQ/FASTA stack**; harness before core code. |
 | 2026-10-02 | **CSV triage split:** agent prefills `verdict` (perf / parity / skip) with heuristics (deprecation flags, external-program wrappers, Restriction autogeneration), owner validates the contested rows only. |
 | 2026-10-02 | **Repo artifacts in English or Chinese only** (docs, comments, docstrings); Russian is chat-only. |
+| 2026-10-03 | **Python floor is 3.10, not 3.9.** nanobind 3.x declares `Requires-Python >=3.10`, and 3.9 has been EOL since Oct 2025. Holding nanobind at 2.x to keep a dead interpreter supported was the worse trade. The README badge, `requires-python` and the CI matrix all say 3.10–3.13; the badge was corrected rather than left claiming support nothing tests. |
+| 2026-10-03 | **Two nanobind defaults overridden** in `CMakeLists.txt`, both named and reported by `build_info()` so a surprising benchmark number can be traced to a build decision instead of argued from memory: `NOMINSIZE` (nanobind adds `-Os` on top of Release's `-O3`, backwards for a throughput library) and `PROTECT_STACK`, plus an explicit `-fstack-protector-strong` so the security claim is true by construction rather than by distro default. Each is a `-DBIOFASTING_*=OFF` away from nanobind's behaviour. |
+| 2026-10-03 | **Wheels build on tags only, never per push**, and musllinux is kept even though it doubles the Linux matrix — Alpine is a common base for bioinformatics containers and the matrix only runs on a tag. The per-push signal is `ci.yml`; `wheels.yml` is release infrastructure. |
+| 2026-10-03 | **Build outputs never enter git.** A commit made while the scaffold was being built swept in 43 files under `build/` — object files, the compiled `.so`, CMake's compiler probe, two `a.out` binaries, and a `CMakeCache.txt` holding absolute local paths. `.gitignore` now covers `build/`, `dist/`, `wheelhouse/`, `_skbuild/`, `*.so` and `*.egg-info/`, and a build directory is treated as disposable: `rm -rf build/` must never cost anything. The tracked copies still have to be removed from the index once (`git rm -r --cached build/`); deleting them from the worktree is not enough. |
 
 ## Risks and counters
 

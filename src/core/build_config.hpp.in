@@ -2,6 +2,14 @@
 //
 // Its only consumer is src/core/build_info.cpp, which turns these into the
 // string map biofasting.build_info() hands to a bug report.
+//
+// There is no single "cxx_flags" string on purpose.  Under scikit-build-core
+// and nanobind the flags that matter are per-target COMPILE_OPTIONS and
+// generator expressions, which do not resolve to anything quotable at configure
+// time; CMAKE_CXX_FLAGS is empty on a stock wheel.  So the caller's global
+// flags are reported separately, and the two build decisions this project makes
+// against nanobind's defaults are reported as named values instead.  See the
+// comment above BIOFASTING_EXTRA_CXX_FLAGS in CMakeLists.txt.
 
 #pragma once
 
@@ -10,6 +18,8 @@
 #define BIOFASTING_BUILD_CXX_STANDARD "@CMAKE_CXX_STANDARD@"
 #define BIOFASTING_BUILD_TYPE "@CMAKE_BUILD_TYPE@"
 #define BIOFASTING_BUILD_ARCH "@BIOFASTING_ARCH@"
-#define BIOFASTING_BUILD_CXX_FLAGS "@BIOFASTING_CXX_FLAGS@"
 #define BIOFASTING_BUILD_CMAKE_VERSION "@CMAKE_VERSION@"
 #define BIOFASTING_BUILD_NANOBIND_VERSION "@BIOFASTING_NANOBIND_VERSION@"
+#define BIOFASTING_BUILD_EXTRA_CXX_FLAGS "@BIOFASTING_EXTRA_CXX_FLAGS@"
+#define BIOFASTING_BUILD_RELAX_MIN_SIZE "@BIOFASTING_RELAX_MIN_SIZE_REPORTED@"
+#define BIOFASTING_BUILD_PROTECT_STACK "@BIOFASTING_PROTECT_STACK_REPORTED@"

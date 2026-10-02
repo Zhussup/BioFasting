@@ -1,0 +1,67 @@
+name: Wheels
+
+# Release infrastructure, not a per-push check.  Matrix: 4 interpreters x
+# (manylinux, musllinux) x (x86_64, aarch64) on Linux, plus 4 macOS arm64
+# wheels, with half the Linux builds running under QEMU.  That is worth paying
+# on a tag and not on every commit; ci.yml is the per-push correctness signal.
+#
+# Gate G2 (PLAN.md) is "PyPI once wheels pass CI".  This workflow produces the
+# wheels; uploading them to PyPI is a deliberate later step and is not done
+# here, because a pre-alpha release should be a decision and not a side effect
+# of pushing a tag.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build_wheels:
+    name: wheels · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, qemu: true }
+          - { os: macos-14, qemu: false }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Register binfmt for the aarch64 Linux builds
+        if: matrix.qemu
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.2.1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    # The sdist is the artifact a downstream packager actually uses, and it is
+    # the one that breaks quietly when a new source file is added to
+    # CMakeLists.txt but not to the sdist manifest.  Building it is cheap; not
+    # building it is how a release ends up installable only from a git checkout.
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - run: python -m pip install --upgrade pip build
+
+      - run: python -m build --sdist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz

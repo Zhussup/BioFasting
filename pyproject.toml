@@ -40,15 +40,36 @@ Repository = "https://github.com/Zhussup/BioFasting"
 minimum-version = "build-system.requires"
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
-build-dir = "build/{wheel_tag}"
+# The {state} segment is not cosmetic.  Without it a plain `python -m build` --
+# which uses its own cmake and ninja from a temporary environment that is
+# deleted the moment it finishes -- and the editable rebuild-on-import share a
+# single build directory.  Whichever runs second then finds a CMake cache
+# pointing at a toolchain that no longer exists, and the rebuild dies with
+# "build tool execution failed".  That is how this was found, not by reading
+# documentation.  Distinct directories, distinct toolchains, no collision, and
+# the wheel build stays safe to run while an editable install is in place.
+build-dir = "build/{state}/{wheel_tag}"
 wheel.packages = ["src/biofasting"]
-sdist.include = [
-    "CMakeLists.txt",
-    "src/**",
-    "tests/**",
-    "requirements-dev.txt",
+
+# Default inclusion mode: walk the tree, skip whatever .gitignore ignores.  The
+# sdist.include list that used to be here is deliberately gone.  In the default
+# mode an include pattern is tested BEFORE the exclude rules, so `src/**` quietly
+# pulled __pycache__/*.pyc into the archive -- bytecode tied to one interpreter
+# and one pytest version, shipped to machines that have neither.  .gitignore
+# already knows what does not belong, and it is maintained anyway, so a second
+# list of the same thing was only ever going to disagree with the first.
+sdist.exclude = [
+    # Committed and useful for a reader, but multi-megabyte, and a downstream
+    # packager has no use for an inventory of Biopython's API.
+    "inventory/*.csv",
+    "inventory/*.json",
+    # The README's images.  They are 1.7 MB of the 1.9 MB archive -- the banner
+    # GIF alone is 1.3 MB -- and they buy nothing: PyPI renders a long
+    # description from absolute URLs, so these relative links are broken on the
+    # project page whether or not the files travel with the source.  The charts
+    # are regenerable from bench/*.py by anyone who wants them.
+    "misc",
 ]
-sdist.exclude = ["bench/data*", "misc", "inventory/*.csv", "inventory/*.json"]
 
 # Recompile the extension when a C++ source changes, so the edit/test loop is
 # `pytest` and nothing else.  This needs cmake and ninja importable in the
@@ -61,12 +82,17 @@ addopts = "-ra --strict-markers --strict-config"
 filterwarnings = ["error"]
 
 [tool.cibuildwheel]
-# Wheels are built on tags and on demand, never on every push: an emulated
-# linux-aarch64 build of four interpreters costs far more than it catches.
+# Wheels are built on tags and on demand, never on every push: this matrix is
+# 4 interpreters x (manylinux, musllinux) x (x86_64, aarch64) on Linux plus 4
+# macOS arm64 wheels, and half the Linux ones run under QEMU.  That is far more
+# than a per-push correctness signal is worth; ci.yml is the per-push signal.
+#
+# musllinux is kept.  It is cibuildwheel's default, and Alpine is a common base
+# for bioinformatics containers, so dropping it would cut off real users to save
+# CI minutes on a job that only runs on a tag.
 build = "cp310-* cp311-* cp312-* cp313-*"
 test-requires = ["pytest"]
 test-command = "pytest {project}/tests"
-# musllinux is deliberately absent for now -- see bench/README.md and PLAN.md.
 
 [tool.cibuildwheel.linux]
 archs = ["x86_64", "aarch64"]

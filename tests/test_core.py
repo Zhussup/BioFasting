@@ -18,13 +18,21 @@ COMPILE_TIME_KEYS = {
     "cxx_standard",
     "build_type",
     "arch",
-    "cxx_flags",
     "cmake",
     "nanobind",
+    "extra_cxx_flags",
+    "relax_min_size",
+    "stack_protector",
 }
 
 # Keys only a running interpreter can add.
 RUNTIME_KEYS = {"python", "platform", "machine"}
+
+# extra_cxx_flags is legitimately "none" on a stock wheel -- nanobind and
+# scikit-build-core supply flags per target, so the caller's global flags are
+# empty.  It is excluded from the emptiness check for that reason, and because
+# a bug report should be able to show that it was looked at rather than absent.
+ALLOWED_TO_BE_A_MARKER = {"extra_cxx_flags"}
 
 
 def test_import_exposes_the_documented_surface():
@@ -52,8 +60,33 @@ def test_build_info_has_both_halves_and_no_empty_values():
     info = biofasting.build_info()
     assert COMPILE_TIME_KEYS <= set(info), "the C++ half is incomplete"
     assert RUNTIME_KEYS <= set(info), "the runtime half is incomplete"
-    empty = sorted(key for key, value in info.items() if not value)
+    empty = sorted(
+        key
+        for key, value in info.items()
+        if not value and key not in ALLOWED_TO_BE_A_MARKER
+    )
     assert not empty, f"build_info() reported empty values: {empty}"
+
+
+def test_extra_cxx_flags_says_so_when_there_are_none():
+    """An absent flag must read as a statement, not as a blank field.
+
+    A bug report with `cxx_flags: ""` invites the reader to conclude "compiled
+    with no flags", which is false.  The key is still here so that the answer to
+    "did anyone pass CMAKE_ARGS?" is visible; it is "none" when nobody did.
+    """
+    assert biofasting.build_info()["extra_cxx_flags"]
+
+
+def test_the_two_build_decisions_against_nanobind_defaults_are_reported():
+    """Both are choices made in CMakeLists.txt, and both are cheap to undo.
+
+    Reported so that a surprising benchmark number can be traced to a build
+    decision instead of being argued about from memory.
+    """
+    info = biofasting.build_info()
+    assert info["relax_min_size"].startswith(("yes", "no"))
+    assert info["stack_protector"].startswith(("yes", "no"))
 
 
 def test_cxx_standard_is_the_one_the_project_claims():
