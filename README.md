@@ -25,6 +25,10 @@ informal single-machine numbers):
 | Reverse complement (same 100k) | `SeqRecord` loop | 0.35 s | — |
 | Reverse complement (same 100k) | `str.translate` | 0.06 s | — |
 
+![Time per 100k FASTQ reads: Biopython vs. alternatives](misc/why-this-exists.png)
+
+(chart rendered by `bench/plot_whythis.py`; the table stays as the data source)
+
 Pure Python already beats `SeqIO` by ~10× on parsing; a C core with runtime SIMD
 dispatch and `libdeflate` for `.gz` targets the larger gap. Real-world FASTQ is
 compressed, so decompression — not tokenization — is usually the first

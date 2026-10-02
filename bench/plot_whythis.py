@@ -92,7 +92,7 @@ def main():
              fontsize=8.5, color=MUTED, va="top")
 
     axes = {}
-    x0, w, gutter = 0.175, 0.345, 0.100
+    x0, w, gutter = 0.210, 0.315, 0.120
     for i, panel in enumerate(PANELS):
         ax = fig.add_axes([x0 + i * (w + gutter), 0.155, w, 0.52], facecolor=SURFACE)
         ax.set_xlim(0, XLIM)
