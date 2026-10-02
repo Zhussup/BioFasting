@@ -1,1 +1,0 @@
-/home/zhus/Desktop/biofaston/build/cp313-cp313-linux_x86_64/install/platlib/biofasting/_core.cpython-313-x86_64-linux-gnu.so

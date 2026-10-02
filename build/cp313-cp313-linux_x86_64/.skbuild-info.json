@@ -1,8 +1,0 @@
-{
-  "source_dir": "/home/zhus/Desktop/biofaston",
-  "build_dir": "/home/zhus/Desktop/biofaston/build/cp313-cp313-linux_x86_64",
-  "cmake_path": "/tmp/pip-build-env-iiizbakd/overlay/lib/python3.13/site-packages/cmake/data/bin/cmake",
-  "skbuild_path": "/tmp/pip-build-env-iiizbakd/overlay/lib/python3.13/site-packages/scikit_build_core",
-  "skbuild_version": "1.1.1",
-  "python_executable": "/home/zhus/Desktop/biofaston/.venv/bin/python3"
-}
