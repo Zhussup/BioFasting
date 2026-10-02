@@ -1,2 +1,4 @@
 # Local design assets, intentionally not committed
-images/
+images/*
+# Keep only the README banner art
+!images/ascii-art (3).png
