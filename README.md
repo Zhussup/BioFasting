@@ -44,6 +44,37 @@ dispatch and `libdeflate` for `.gz` targets the larger gap. Real-world FASTQ is
 compressed, so decompression — not tokenization — is usually the first
 bottleneck to defeat.
 
+### Measured on the real corpus (Phase 0)
+
+That draft is what started the project. Phase 0 replaced it with a
+correctness-gated corpus and a ranked list of targets. On the 1M-read corpus,
+the two largest gaps are FASTQ parsing — `SeqIO.parse` 3.2 s vs 0.45 s for a
+naive pure-Python loop, **7.1×**, with **55.7%** of Biopython's time in its own
+Python frames — and FASTA random access, where 150 bp costs **~160 ms** through
+`SeqIO.index` against **3 µs** through pyfaidx, because a `SeqIO` index stores
+whole-record offsets and so re-parses the record for every slice.
+
+![Gate G1 ranking — Biopython vs. the best available alternative, per workload,
+log scale](misc/g1-ranking.png)
+
+(chart rendered by `bench/plot_g1.py`; the table in `bench/targets.md` stays the
+data source)
+
+The gap is not a floor to be matched, it is interpreter work to be deleted:
+between a third and two thirds of every Biopython row is Python bytecode inside
+`Bio/**`, while the rows already in C — pysam, pyfaidx, the zlib decompression
+floor — have nothing left to remove.
+
+![Share of profiled time spent in Biopython's own Python frames, per
+implementation](misc/profile-share.png)
+
+(chart rendered by `bench/plot_profile.py`; the profiles are in
+`bench/profiling.md`)
+
+The full ranking, with the caveat attached to each alternative and the Phase 1
+ordering, is in [bench/targets.md](bench/targets.md); the profiles behind it are
+in [bench/profiling.md](bench/profiling.md).
+
 ## Principles
 
 1. **Benchmark first.** No code until a bench harness ranks workloads by
@@ -116,32 +147,10 @@ python3 -m venv .venv && .venv/bin/pip install -r bench/requirements.txt
 .venv/bin/python bench/plot_profile.py            # -> misc/profile-share.png
 ```
 
-Measured on the 1M-read corpus, the two largest gaps are FASTQ parsing —
-`SeqIO.parse` 3.2 s vs 0.45 s for a naive pure-Python loop, **7.1×**, with
-**55.7%** of Biopython's time in its own Python frames — and FASTA random
-access, where 150 bp costs **~160 ms** through `SeqIO.index` against **3 µs**
-through pyfaidx, because a `SeqIO` index stores whole-record offsets and so
-re-parses the record for every slice.  The full ranking, with the caveat
-attached to each alternative and the Phase 1 ordering, is in
-[bench/targets.md](bench/targets.md); the profiles behind it are in
-[bench/profiling.md](bench/profiling.md).
-
-![Gate G1 ranking — Biopython vs. the best available alternative, per workload,
-log scale](misc/g1-ranking.png)
-
-(chart rendered by `bench/plot_g1.py`; the table in `bench/targets.md` stays the
-data source)
-
-The gap is not a floor to be matched, it is interpreter work to be deleted:
-between a third and two thirds of every Biopython row is Python bytecode inside
-`Bio/**`, while the rows already in C — pysam, pyfaidx, the zlib decompression
-floor — have nothing left to remove.
-
-![Share of profiled time spent in Biopython's own Python frames, per
-implementation](misc/profile-share.png)
-
-(chart rendered by `bench/plot_profile.py`; the profiles are in
-`bench/profiling.md`)
+The numbers these produce are charted in
+[Measured on the real corpus](#measured-on-the-real-corpus-phase-0) above, and
+tabulated in [bench/targets.md](bench/targets.md); the profiles behind them are
+in [bench/profiling.md](bench/profiling.md).
 
 ## Key inventory facts (Biopython 1.88)
 
