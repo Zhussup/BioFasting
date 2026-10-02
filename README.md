@@ -17,8 +17,10 @@ A C/C++-backed core library for sequence bioinformatics, built to close the
 *numpy of bioinformatics*: a fast substrate that other tools build on, not
 another API clone on top of it.
 
-**Status:** pre-alpha, Phase 0 (evidence). No library code yet — the API
-inventory and a reproducible benchmark corpus come first.
+**Status:** pre-alpha, Phase 0 (evidence) **complete**. No library code yet — the
+API inventory, a reproducible benchmark corpus, and a profiled, ranked list of
+targets came first. Phase 1 (the FASTQ/FASTA core) starts from that ranking:
+see [bench/targets.md](bench/targets.md).
 
 ## Why this exists
 
@@ -77,9 +79,15 @@ inventory/
 bench/
   gen_data.py                 # seeded, byte-reproducible corpus generator
   run.py                      # benchmark runner (SeqIO vs naive vs pysam/pyfaidx)
+  profile_paths.py            # cProfile/py-spy over the runner's own paths
+  plot_g1.py                  # renders misc/g1-ranking.png from the ranking
+  plot_profile.py             # renders misc/profile-share.png from the profiles
   requirements.txt            # pinned bench environment
   README.md                   # what the corpus contains and why it is honest
+  profiling.md                # step 0.4: hotspots with % share
+  targets.md                  # step 0.5: the ranked target list (Gate G1)
   data/                       # generated (gitignored) + MANIFEST.json checksums
+misc/                         # rendered charts referenced by this README
 ```
 
 Regenerate the inventory any time (updates automatically with your installed
@@ -102,8 +110,38 @@ output does not match Biopython's:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r bench/requirements.txt
-.venv/bin/python bench/run.py
+.venv/bin/python bench/run.py                     # the comparison table
+.venv/bin/python bench/profile_paths.py --all     # where the time goes
+.venv/bin/python bench/plot_g1.py                 # -> misc/g1-ranking.png
+.venv/bin/python bench/plot_profile.py            # -> misc/profile-share.png
 ```
+
+Measured on the 1M-read corpus, the two largest gaps are FASTQ parsing —
+`SeqIO.parse` 3.2 s vs 0.45 s for a naive pure-Python loop, **7.1×**, with
+**55.7%** of Biopython's time in its own Python frames — and FASTA random
+access, where 150 bp costs **~160 ms** through `SeqIO.index` against **3 µs**
+through pyfaidx, because a `SeqIO` index stores whole-record offsets and so
+re-parses the record for every slice.  The full ranking, with the caveat
+attached to each alternative and the Phase 1 ordering, is in
+[bench/targets.md](bench/targets.md); the profiles behind it are in
+[bench/profiling.md](bench/profiling.md).
+
+![Gate G1 ranking — Biopython vs. the best available alternative, per workload,
+log scale](misc/g1-ranking.png)
+
+(chart rendered by `bench/plot_g1.py`; the table in `bench/targets.md` stays the
+data source)
+
+The gap is not a floor to be matched, it is interpreter work to be deleted:
+between a third and two thirds of every Biopython row is Python bytecode inside
+`Bio/**`, while the rows already in C — pysam, pyfaidx, the zlib decompression
+floor — have nothing left to remove.
+
+![Share of profiled time spent in Biopython's own Python frames, per
+implementation](misc/profile-share.png)
+
+(chart rendered by `bench/plot_profile.py`; the profiles are in
+`bench/profiling.md`)
 
 ## Key inventory facts (Biopython 1.88)
 

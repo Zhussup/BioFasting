@@ -18,3 +18,8 @@ pyfaidx==0.9.0.4
 # uninstrumented, wall-clock view that sees inside C extensions.  It is a
 # profiler, not a benchmark dependency -- bench/run.py does not need it.
 py-spy==0.4.2
+
+# Charts.  Also not needed to measure anything -- the README's images are
+# rendered from the runner's and profiler's own numbers by
+# plot_g1.py / plot_profile.py, and the tables stay the data source.
+matplotlib==3.11.2

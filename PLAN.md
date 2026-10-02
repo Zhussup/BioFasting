@@ -12,6 +12,12 @@ See [README.md](README.md) for the pitch and principles.
       FASTQ 1M×150bp + gzip variant + 10k prefix, genome FASTA, edge and
       malformed sets; byte-reproducible (SHA-256 counter-mode randomness,
       integer-only sampling) with a verified `MANIFEST.json`.
+- [x] 0.3 Benchmark runner (`bench/run.py`): Biopython vs naive Python vs
+      pysam/pyfaidx, median-of-5, correctness-gated — 20 rows, all validated.
+- [x] 0.4 Profiling (`bench/profile_paths.py`, `bench/profiling.md`): a third
+      to two thirds of every Biopython row is Python bytecode in `Bio/**`.
+- [x] 0.5 Ranked targets (`bench/targets.md`); **Gate G1 passed** — FASTQ/FASTA
+      confirmed as the flagship from data.
 
 ## Phase 0 — Evidence (weeks 1–2)
 
@@ -21,10 +27,14 @@ Goal: replace intuition with a ranked, reproducible list of targets.
 |---|---|---|---|
 | 0.2 | Dataset generator (seeded): FASTQ 1M×150bp, gzipped variant, multi-line FASTQ edge corpus, quality-encoding edge cases, genome-sized FASTA | `bench/data/` | anyone can regenerate the exact corpus from one command ✅ |
 | 0.3 | Benchmark runner: Biopython `SeqIO` vs naive pure-Python vs installed C-backed libs (`pysam`, `pyfaidx`); median-of-N runs, MB/s | `bench/run.py`, `bench/results/*.json` | one command produces the full comparison table ✅ |
-| 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | `bench/profile_paths.py`, `bench/profiling.md` | top hotspots named with % share |
-| 0.5 | Ranked targets: *workload → Biopython time → best alternative → stolen gap* | `bench/targets.md` | ranking exists with evidence behind every row |
+| 0.4 | Profiling of the slowest paths (cProfile + py-spy): interpreter overhead share per path | `bench/profile_paths.py`, `bench/profiling.md` | top hotspots named with % share ✅ |
+| 0.5 | Ranked targets: *workload → Biopython time → best alternative → stolen gap* | `bench/targets.md` | ranking exists with evidence behind every row ✅ |
 
 **Gate G1:** confirm flagship choice from data (expected: FASTQ/FASTA).
+**Passed 2026-10-02.** The two largest measured gaps are both in that scope —
+FASTQ parsing (7.1×, 2.74 s per million reads, 55.7% of it Python bytecode) and
+FASTA random access (160 ms vs 3 µs per slice, because `SeqIO.index` has no
+slice-capable index). Ranking and ordering: `bench/targets.md`.
 
 ## Phase 1 — Flagship: FASTQ/FASTA core (weeks 3–8)
 
