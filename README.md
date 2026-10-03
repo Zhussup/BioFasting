@@ -17,12 +17,66 @@ A C/C++-backed core library for sequence bioinformatics, built to close the
 *numpy of bioinformatics*: a fast substrate that other tools build on, not
 another API clone on top of it.
 
-**Status:** pre-alpha. Phase 0 (evidence) and Phase 1 (the FASTQ/FASTA flagship
-core) are **complete**: the C++ core builds, imports and reports its own build
-identity, and both flagship readers are here — `biofasting.open_fastq()` for
-plain and gzipped
-FASTQ, `biofasting.open_fasta()` for an indexed FASTA — along with the first
-sequence operations that dispatch on the CPU at runtime
+## Why this exists
+
+On a draft benchmark (100k FASTQ reads, 30 MB, Intel i5-13420H, single-threaded,
+informal single-machine numbers):
+
+| Workload | Approach | Time | Throughput |
+|---|---|---:|---:|
+| Parse 100k reads | `Bio.SeqIO.parse` (1.88) | 0.31 s | 319k rec/s |
+| Parse 100k reads | naive pure-Python parser | 0.03 s | 3.42M rec/s |
+| Parse 100k reads | `pysam.FastxFile` (C/htslib) | 0.05 s | 2.21M rec/s |
+| Reverse complement (same 100k) | `SeqRecord` loop | 0.35 s | — |
+| Reverse complement (same 100k) | `str.translate` | 0.06 s | — |
+
+![Time per 100k FASTQ reads: Biopython vs. alternatives](misc/why-this-exists.png)
+
+(chart rendered by `bench/plot_whythis.py`; the table stays as the data source)
+
+Pure Python already beats `SeqIO` by ~10× on parsing; a C core with runtime SIMD
+dispatch and `libdeflate` for `.gz` targets the larger gap. Real-world FASTQ is
+compressed, so decompression — not tokenization — is usually the first
+bottleneck to defeat.
+
+### Measured on the real corpus (Phase 0)
+
+That draft is what started the project. Phase 0 replaced it with a
+correctness-gated corpus and a ranked list of targets. On the 1M-read corpus,
+the two largest gaps are FASTQ parsing — `SeqIO.parse` 3.2 s vs 0.45 s for a
+naive pure-Python loop, **7.1×**, with **55.7%** of Biopython's time in its own
+Python frames — and FASTA random access, where 150 bp costs **~160 ms** through
+`SeqIO.index` against **3 µs** through pyfaidx, because a `SeqIO` index stores
+whole-record offsets and so re-parses the record for every slice.
+
+![Gate G1 ranking — Biopython vs. the best available alternative, per workload,
+log scale](misc/g1-ranking.png)
+
+(chart rendered by `bench/plot_g1.py`; the table in `bench/targets.md` stays the
+data source)
+
+The gap is not a floor to be matched, it is interpreter work to be deleted:
+between a third and two thirds of every Biopython row is Python bytecode inside
+`Bio/**`, while the rows already in C — pysam, pyfaidx, the zlib decompression
+floor — have nothing left to remove.
+
+![Share of profiled time spent in Biopython's own Python frames, per
+implementation](misc/profile-share.png)
+
+(chart rendered by `bench/plot_profile.py`; the profiles are in
+`bench/profiling.md`)
+
+The full ranking, with the caveat attached to each alternative and the Phase 1
+ordering, is in [bench/targets.md](bench/targets.md); the profiles behind it are
+in [bench/profiling.md](bench/profiling.md).
+
+## Status
+
+Pre-alpha. Phase 0 (evidence) and Phase 1 (the FASTQ/FASTA flagship core) are
+**complete**: the C++ core builds, imports and reports its own build identity,
+and both flagship readers are here — `biofasting.open_fastq()` for plain and
+gzipped FASTQ, `biofasting.open_fasta()` for an indexed FASTA — along with the
+first sequence operations that dispatch on the CPU at runtime
 (`reverse_complement`, `gc_fraction`, `count_kmers`). All of them are
 byte-identical to `Bio.SeqIO`/`Bio.Seq` on the whole corpus and several times
 faster on it. On the 1M-read corpus the reader parses at **14.1×**
@@ -232,59 +286,6 @@ a score above PHRED 93 is truncated *and warned about*.  The flat-file writers
 are `parity`, measured and deferred — a byte-identical GenBank record means
 writing the annotations dict and the FEATURES table, which this package only
 reads.
-
-## Why this exists
-
-On a draft benchmark (100k FASTQ reads, 30 MB, Intel i5-13420H, single-threaded,
-informal single-machine numbers):
-
-| Workload | Approach | Time | Throughput |
-|---|---|---:|---:|
-| Parse 100k reads | `Bio.SeqIO.parse` (1.88) | 0.31 s | 319k rec/s |
-| Parse 100k reads | naive pure-Python parser | 0.03 s | 3.42M rec/s |
-| Parse 100k reads | `pysam.FastxFile` (C/htslib) | 0.05 s | 2.21M rec/s |
-| Reverse complement (same 100k) | `SeqRecord` loop | 0.35 s | — |
-| Reverse complement (same 100k) | `str.translate` | 0.06 s | — |
-
-![Time per 100k FASTQ reads: Biopython vs. alternatives](misc/why-this-exists.png)
-
-(chart rendered by `bench/plot_whythis.py`; the table stays as the data source)
-
-Pure Python already beats `SeqIO` by ~10× on parsing; a C core with runtime SIMD
-dispatch and `libdeflate` for `.gz` targets the larger gap. Real-world FASTQ is
-compressed, so decompression — not tokenization — is usually the first
-bottleneck to defeat.
-
-### Measured on the real corpus (Phase 0)
-
-That draft is what started the project. Phase 0 replaced it with a
-correctness-gated corpus and a ranked list of targets. On the 1M-read corpus,
-the two largest gaps are FASTQ parsing — `SeqIO.parse` 3.2 s vs 0.45 s for a
-naive pure-Python loop, **7.1×**, with **55.7%** of Biopython's time in its own
-Python frames — and FASTA random access, where 150 bp costs **~160 ms** through
-`SeqIO.index` against **3 µs** through pyfaidx, because a `SeqIO` index stores
-whole-record offsets and so re-parses the record for every slice.
-
-![Gate G1 ranking — Biopython vs. the best available alternative, per workload,
-log scale](misc/g1-ranking.png)
-
-(chart rendered by `bench/plot_g1.py`; the table in `bench/targets.md` stays the
-data source)
-
-The gap is not a floor to be matched, it is interpreter work to be deleted:
-between a third and two thirds of every Biopython row is Python bytecode inside
-`Bio/**`, while the rows already in C — pysam, pyfaidx, the zlib decompression
-floor — have nothing left to remove.
-
-![Share of profiled time spent in Biopython's own Python frames, per
-implementation](misc/profile-share.png)
-
-(chart rendered by `bench/plot_profile.py`; the profiles are in
-`bench/profiling.md`)
-
-The full ranking, with the caveat attached to each alternative and the Phase 1
-ordering, is in [bench/targets.md](bench/targets.md); the profiles behind it are
-in [bench/profiling.md](bench/profiling.md).
 
 ## Principles
 
