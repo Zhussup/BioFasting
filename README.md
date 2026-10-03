@@ -35,11 +35,8 @@ The zero-copy views have landed too:
 straight at the mapped file, and `open_fastq_grid()` does the same for a read
 file — when the records are uniform, which the corpus FASTQ files are not, a
 limit the reader reports rather than papering over. `biofasting.interop` closes
-the loop with Biopython: records convert to `Bio.SeqRecord` and back, and
-`write_fasta`, `write_fastq` and `write_qual` reproduce `SeqIO.write` byte for
-byte — 4.6×, 12.1× and 16.4× its speed on the same records, each building the
-whole file in one C++ buffer so the handle is crossed once rather than once a
-line. Phase 1 was chosen from the
+the loop with Biopython: records convert to `Bio.SeqRecord` and back, and our
+writers reproduce `SeqIO.write` byte for byte. Phase 1 was chosen from the
 ranking in [bench/targets.md](bench/targets.md), which is what made FASTQ and
 FASTA the flagship in the first place, and that file now carries the delivered
 numbers beside the ranking that predicted them.
@@ -199,9 +196,10 @@ line and has no `SOURCE` consumer.  Digest-gated on every key, its position and
 every value on the two bare/annotated pairs: **4.48 µs** per 1 kb GenBank record
 against 25.25 (**5.6×**) and 4.13 against 24.72 on EMBL (6.0×); on the marginal
 measurement the milestone was built against, **4.61 µs** of GenBank header
-against the reference's 32.94 (**6.9×**) and **5.37** against 17.03 on EMBL
-(**3.3×**) — the GenBank gap being mostly the quadratic structured-comment regex
-the kernel never runs.  A header line that sets a key this reader does not
+against the **31.95** the target was set from, re-measured at 32.94 (**6.9×**),
+and **5.37** on EMBL against 17.89, re-measured at 17.03 (**3.3×**) — the
+GenBank gap being mostly the quadratic structured-comment regex the kernel never
+runs.  A header line that sets a key this reader does not
 produce — `NID`, `PID`, `DBSOURCE`, `SEGMENT`, a structured comment — makes the
 *record* refuse and name the shape rather than return a dict missing a key, and a
 refusal is per record, so the sequence and the other records stay usable.
@@ -351,9 +349,9 @@ src/
     sequtils.py               # the half of Bio.SeqUtils that measures: GC123, GC_skew,
                               #   molecular_weight, seq1/seq3, nt_search, CAI
     protparam.py              # ProteinAnalysis: the eleven measurements
-    protparam_data.py         # generated: the ten scales, as the reference spells them
-    _protparam_data.py        # the scale classes, no data
-    _iupac_data.py            # the IUPAC ambiguity alphabet, for nt_search
+    protparam_data.py         # `Bio.SeqUtils.ProtParamData`: the scales, as it exposes them
+    _protparam_data.py        # generated: 32 tables, every letter aligned to AMINO_ACIDS
+    _iupac_data.py            # generated: the IUPAC tables sequtils and checksum need
     isoelectric_point.py      # the one that needs a solver rather than a sum
     checksum.py               # the four sequence checksums: crc32, crc64, gcg, seguid
     interop.py                # our records <-> Bio.SeqRecord, and the writers
@@ -386,7 +384,8 @@ src/
     seqops.{hpp,cpp}          # revcomp / GC / k-mers / translate, dispatched to AVX2
     sequtils.{hpp,cpp}        # counts and sums for Bio.SeqUtils: GC123 / GC_skew /
                               #   molecular_weight / gcg / crc64, dispatched to AVX2
-    protparam.{hpp,cpp}       # the sums and the pI solver for ProteinAnalysis
+    protparam.{hpp,cpp}       # the per-residue kernels: protein_scale, flexibility,
+                              #   instability_index, count_residues
     write.{hpp,cpp}           # FASTA / FASTQ / QUAL writers: one buffer, one crossing
     build_config.hpp.in       # template CMake fills in with the build identity
 tests/                        # pytest suite; scaffold invariants + the kernels
@@ -407,6 +406,13 @@ bench/
   run.py                      # benchmark runner (SeqIO vs naive vs pysam/pyfaidx)
   grid.py                     # the zero-copy views, measured where run.py cannot
   profile_paths.py            # cProfile/py-spy over the runner's own paths
+  seqio_corpus.py             # the flat-file corpus: generated in memory, not stored
+  rank_seqio.py               # ranking pass 6: the flat-file readers, and their floors
+  rank_writers.py             # ranking pass 7: the writers, three floors deep
+  bench_genbank.py            # the flat-file reader, on disk and digest-gated
+  bench_features.py           # the FEATURES table, gated per feature
+  bench_annotations.py        # the annotations dict, key order included
+  bench_writers.py            # the delivered writers, held to their targets
   plot_whythis.py             # renders misc/why-this-exists.png from the draft table
   plot_g1.py                  # renders misc/g1-ranking.png from the ranking
   plot_profile.py             # renders misc/profile-share.png from the profiles
@@ -420,6 +426,8 @@ tools/                        # build-time data generators (need Biopython, do n
   gen_restriction_data.py     # Biopython's enzyme classes -> src/biofasting/_restriction_data.py
   gen_codon_tables.py         # Biopython's 27 genetic codes -> _codon_tables_data.py
   gen_substitution_matrices.py # Biopython's 30 scoring matrices -> _substitution_matrices_data.py
+  gen_iupac_data.py           # Biopython's IUPAC tables -> _iupac_data.py
+  gen_protparam_data.py       # Biopython's amino-acid scales -> _protparam_data.py
   vendor_libdeflate.py        # pins, verifies and copies libdeflate into third_party/
 CMakeLists.txt                # build of the C++ extension
 pyproject.toml                # scikit-build-core, cibuildwheel, pytest config
