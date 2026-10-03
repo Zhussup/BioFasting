@@ -1540,3 +1540,73 @@ would see the reference raise under warnings-as-errors sees this raise too.
 annotations dict and the FEATURES table, which M21 and M22 only read.  Their
 attribution above — 29.0 and 37.7 µs a record, 148.7 and 169.6 `write` calls —
 is the target when that work starts, and nothing in it has been delivered.
+
+## Phase 2 ranking, eighth pass: pairwise alignment (PLAN 2.1, 2026-10-04)
+
+The plan files alignment as a *wrapper* — parasail or WFA2-lib behind the
+dispatch interface, reusing an optimized Smith-Waterman rather than writing one.
+That premise was checked before anything was built, because it can be false
+here: `Bio.Align.PairwiseAligner` in 1.88 is **not** Python.  It is a C
+extension (`Bio/Align/_pairwisealigner.cpython-313-x86_64-linux-gnu.so`), a
+scalar DP at 3.1–3.5 ns a cell, so the question is where the difference is and
+whether it survives a wrapper's own call overhead.
+
+`bench/rank_align.py`, six rows, median of seven after warm-up.  Every row is
+**gated before any time is quoted**: both sides align every pair of the row
+with the same scheme and the scores must be equal or the run stops with the
+mismatch printed.  All six gate equal.
+
+| row | pairs | width | reference µs/align | parasail µs/align | speedup |
+|---|---:|---:|---:|---:|---:|
+| `dna-global-150x512` | 512 | int16 | 70.39 | 11.74 | 6.00× |
+| `dna-global-1k` | 1 | int16 | 3511.10 | 170.93 | 20.54× |
+| `dna-global-10k` | 1 | int16 | 344746.09 | 19931.11 | 17.30× |
+| `dna-semiglobal-150-vs-10k` | 1 | int16 | 5179.27 | 547.74 | 9.46× |
+| `dna-local-1k-vs-20k` | 1 | int16 | 131863.34 | 3813.32 | 34.58× |
+| `protein-blosum62-300` | 1 | int16 | 279.47 | 32.64 | 8.56× |
+
+With traceback (the reference's `align()` iterator against parasail's
+`*_trace_scan`): 16.23×, 24.35×, 9.17×, 37.58×, 17.28×, 16.15× in the same row
+order.  Per cell the DP itself is **7–17×**: reference 3.128 / 3.518 / 3.447 /
+3.452 / 6.600 / 3.116 ns against parasail 0.522 / 0.171 / 0.199 / 0.365 /
+0.191 / 0.364 ns.  The local row's 34.6× is partly the reference's own local
+mode being slower (6.6 ns a cell, not 3.4).
+
+**The finding that made the table real — which parasail function is called.**
+The first run of this pass used the *unsuffixed* `nw_scan`/`sg_scan`/`sw_scan`
+bindings and reported a weak 1.4×–8.6×.  Those are the generic dispatch at
+**2.2 ns a cell**.  The explicitly sized bindings are the SIMD kernels — `_8` is
+a full sixteen-lane int8 register, `_16` eight lanes — at **0.17–0.52 ns a
+cell**, ten to twenty-eight times the unsuffixed call.  So the wrapper calls no
+unsuffixed binding at all: it picks the width from the scheme's own score bound,
+`n * (largest |matrix| + extend) + open`, and the gate is what proves the choice
+did not overflow — a saturated width returns a wrong score, not an error.
+Every row here lands on int16; `dna-global-10k` at 2/−2/10/1 bounds at 30,010
+and fits.  The bound is deliberately loose, because one width too wide costs a
+factor of two and one too narrow is a wrong answer.
+
+The wrapper's overhead was measured too, so that it is a known quantity before
+the wrapper exists: **~2 µs a call** (a 64-cell call is 2.07 µs against the
+reference's 2.23).  That is why the 150×150 row is the weakest — its DP is
+11.7 µs, of which about two are the crossing.
+
+**Floors, and what was left out.**  The floor is parasail itself: a pure-Python
+DP is minutes on the 10 kb pair, so it is stated and not carried as a column.
+**WFA2-lib is not installable from PyPI** — no package, not a missing wheel — so
+it is a *vendoring* decision and not a measurement, and it is absent from the
+pass rather than estimated.  The row it exists for is `dna-global-10k` at 1%
+divergence: an edit-distance algorithm against a full DP.  That is the row to
+measure if it is ever vendored.
+
+**Verdict: `align`/`score` behind a wrapper is `perf`, 6×–35× score-only and
+9×–38× with traceback**, with one packaging caveat measured here: `parasail`
+1.3.4 ships wheel for x86_64 linux, x86_64 macOS, win32 and win_amd64 **and no
+aarch64 of any kind**, so on the CI's `macos-14` (Apple Silicon) and in the
+aarch64 wheel job it can only come from the sdist.  The wrapper is therefore an
+optional extra, and the number above is honestly an x86-64 number.
+
+**Still open.**  The delivered wrapper's own numbers (through
+`biofasting.alignment`, not through parasail directly, which is what the table
+measures) are recorded in the delivered section below; the arm64 packaging
+decision — require parasail and pay a source build, or vendor its C into
+`third_party/` as libdeflate was — is the owner's.
