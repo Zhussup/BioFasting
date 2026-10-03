@@ -273,7 +273,14 @@ nanobind_add_module(_core ${BIOFASTING_NANOBIND_ARGS} ${BIOFASTING_CORE_SOURCES}
 # target, and holding third-party code to -Werror would turn a nanobind patch
 # release into our build failure.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  set(BIOFASTING_CORE_FLAGS "-Wall;-Wextra")
+  set(BIOFASTING_CORE_FLAGS "-Wall;-Wextra;-ffp-contract=off")
+  #   FP contract is off, stated in the build and not left to the compiler:
+  #   the contract with the reference is bit-identity, and on arm64 -- Apple
+  #   Silicon and the cibuildwheel aarch64 matrix alike -- both compilers
+  #   contract `w * front + w * back` into a fused multiply-add by default,
+  #   which rounds one step less and moves results by one ulp against
+  #   Biopython's interpreted arithmetic.  Reproduced on x86-64 built with
+  #   -mfma: the same test, the same index-0 value the macos-14 job printed.
   if(BIOFASTING_WERROR)
     list(APPEND BIOFASTING_CORE_FLAGS "-Werror")
   endif()
@@ -345,6 +352,11 @@ if(BIOFASTING_PROTECT_STACK)
 else()
   set(BIOFASTING_PROTECT_STACK_REPORTED "no (nanobind default)")
 endif()
+
+#   The one decision made against the compilers' defaults rather than nanobind's,
+#   so it has no option: every value that keeps the contract true is "off", and
+#   turning contraction back on changes the answers on arm64.
+set(BIOFASTING_FP_CONTRACT_REPORTED "off (-ffp-contract=off)")
 
 configure_file(
   "${CMAKE_CURRENT_SOURCE_DIR}/src/core/build_config.hpp.in"

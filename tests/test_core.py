@@ -24,6 +24,7 @@ COMPILE_TIME_KEYS = {
     "extra_cxx_flags",
     "relax_min_size",
     "stack_protector",
+    "fp_contract",
 }
 
 # Keys only a running interpreter can add.
@@ -88,6 +89,19 @@ def test_the_two_build_decisions_against_nanobind_defaults_are_reported():
     info = biofasting.build_info()
     assert info["relax_min_size"].startswith(("yes", "no"))
     assert info["stack_protector"].startswith(("yes", "no"))
+
+
+def test_fp_contract_is_reported_and_is_off():
+    """The one decision against the *compilers'* defaults, reported the same way.
+
+    The reference's floating arithmetic is the interpreter's own IEEE double
+    operations, and a contracted multiply-add rounds one step less than the
+    operations the reference asks for -- invisible on x86-64, which has no FMA
+    in its baseline instruction set, and one ulp away on arm64, which has it
+    everywhere.  Reported rather than remembered: a macos or aarch64 answer has
+    to be traceable to a build decision without rebuilding anyone's wheel.
+    """
+    assert biofasting.build_info()["fp_contract"].startswith("off")
 
 
 def test_cxx_standard_is_the_one_the_project_claims():
