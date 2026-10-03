@@ -35,8 +35,11 @@ The zero-copy views have landed too:
 straight at the mapped file, and `open_fastq_grid()` does the same for a read
 file — when the records are uniform, which the corpus FASTQ files are not, a
 limit the reader reports rather than papering over. `biofasting.interop` closes
-the loop with Biopython: records convert to `Bio.SeqRecord` and back, and our
-writers reproduce `SeqIO.write` byte for byte. Phase 1 was chosen from the
+the loop with Biopython: records convert to `Bio.SeqRecord` and back, and
+`write_fasta`, `write_fastq` and `write_qual` reproduce `SeqIO.write` byte for
+byte — 4.6×, 12.1× and 16.4× its speed on the same records, each building the
+whole file in one C++ buffer so the handle is crossed once rather than once a
+line. Phase 1 was chosen from the
 ranking in [bench/targets.md](bench/targets.md), which is what made FASTQ and
 FASTA the flagship in the first place, and that file now carries the delivered
 numbers beside the ranking that predicted them.
@@ -133,6 +136,104 @@ Two rows are below 2× and are reported as they are: `CodonAdaptationIndex` is a
 faithful Python port with no kernel (1.0×, a measured target not yet spent), and
 the windowed-`str.count` baseline for `GC_skew` is already fast, so that kernel's
 win is memory rather than arithmetic.
+
+The three flat-file formats that carry essentially all of the world's sequence
+data — GenBank, EMBL and SwissProt — are here too:
+[`biofasting.genbank`](src/biofasting/genbank.py) over a C++ reader that walks
+the file once and records where each record's header and residues are.  Phase 0's
+triage had filed all three as `parity`, "no large win expected"; the sixth
+ranking pass measured otherwise, which is why they exist.  Two-thirds to
+nine-tenths of `SeqIO.parse`'s time on a flat file is its own line-by-line
+logic — not data movement and not object construction — so
+`biofasting.read_genbank()` reproduces `id`, `name`, `description` and the
+sequence at **12.3×** `SeqIO.parse` on a 1 kb GenBank record (3.52 µs), **14.5×**
+on a SwissProt record (1.86 µs) and 6.5–7.8× on the long rows, at 400–585 MB/s
+whichever size the records are — and it is still 1.2–2.0× faster than the
+smallest pure-Python parser that
+extracts ids and sequences alone, while producing more than that parser does.
+Every row is digest-gated on all four fields over all 11,900 records of the
+corpus before any time is quoted.  Where Biopython warns and guesses — an
+`ORIGIN` line indented one byte short, a `CONTIG` line inside a sequence block, a
+duplicate id — this reader raises instead, and the refusals are asserted beside
+the agreements: reproducing a guess is how a sequence that looks right stops
+being right.
+
+The **FEATURES table** — the part of a flat-file record the reader above
+deliberately does not produce — is
+[`biofasting.read_features()`](src/biofasting/seqfeature.py), over a location
+grammar in C++ that keeps every kind of fuzziness a location can carry rather
+than flattening it into a pair of integers: `complement` carries a strand, `<`
+and `>` make an end fuzzy, `(3.9)` is a boundary known only to lie between two
+bases, `one-of(5,7)` is a choice, `^` is a zero-length junction.  A port that
+stored `(start, end)` would agree with Biopython on every exact location and
+disagree silently on every other one — invisibly, because Biopython's positions
+compare by integer value.  `biofasting.to_seqfeature()` converts a feature back
+into `Bio.SeqFeature` for callers who want Biopython's types, and it is the only
+place a warning is ever emitted: the kernel *reports* what it found — one entry
+per repaired origin-wrap part, one per dropped `bond`, in the reference's own
+order — and the Python layer says the reference's own words, so reading features
+and holding them is silent.  Three outcomes are kept apart: parsed, the
+reference's own `parser_error` (it catches its `LocationParserError`, warns, and
+carries on with no location — a behaviour, so it is reproduced), and a
+**refusal** for a table this reader cannot reproduce, which raises with the byte
+offset rather than returning a partly parsed one.  Digest-gated on type,
+location and qualifiers over all 12,000 features of the corpus: **9.82 µs** per
+1 kb GenBank record against 48.83 (**5.0×**), and on the per-feature measurement
+the milestone was built against, **7.62 µs** against the reference's 23.71 —
+**2.1×** on the location string and qualifier block alone, with building the
+`SeqFeature` costing 4.79 µs against the reference's own 4.2, which is parity.
+A 2–3× on one component is a modest number and it is reported as it stands.
+
+The **annotations dict** — the header keys of `SeqRecord.annotations` — is
+[`biofasting.read_annotations()`](src/biofasting/annotations.py), with
+`biofasting.to_reference()` for callers who want Biopython's
+`Bio.SeqFeature.Reference`.  The kernel walks the header's lines, so it alone
+knows which lines were there and in what order, and it hands the keys back **in
+the order it created them**: the reference inserts a key when the line stating
+it is consumed, so a `COMMENT` above the first `REFERENCE` puts `comment` before
+`references`, and a reader that emitted a fixed key list would be right about a
+corpus and wrong about a file.  Membership in that order is also what says a key
+*exists* — GenBank's thin header carries nine keys and EMBL's six, the missing
+three being `date`, `source` and `keywords`, because EMBL's scanner reads no `DT`
+line and has no `SOURCE` consumer.  Digest-gated on every key, its position and
+every value on the two bare/annotated pairs: **4.48 µs** per 1 kb GenBank record
+against 25.25 (**5.6×**) and 4.13 against 24.72 on EMBL (6.0×); on the marginal
+measurement the milestone was built against, **4.61 µs** of GenBank header
+against the reference's 32.94 (**6.9×**) and **5.37** against 17.03 on EMBL
+(**3.3×**) — the GenBank gap being mostly the quadratic structured-comment regex
+the kernel never runs.  A header line that sets a key this reader does not
+produce — `NID`, `PID`, `DBSOURCE`, `SEGMENT`, a structured comment — makes the
+*record* refuse and name the shape rather than return a dict missing a key, and a
+refusal is per record, so the sequence and the other records stay usable.
+SwissProt's header and `FT` block are `Bio.SwissProt`, a different reader, and
+are out of scope.
+
+**Writing** is the third thing the flat-file work left open, and the writers were
+measured before they were written. The seventh ranking pass
+([bench/targets.md](bench/targets.md)) asked the triage's `parity` verdict a
+timer's question — `SeqIO.write`, a byte-identical pure-Python rewrite, and the
+raw payload, three floors deep — and got three different answers, which is why
+the three formats are three kernels and not one:
+[`write_fasta`](src/core/write.cpp), [`write_fastq`](src/core/write.cpp) and
+[`write_qual`](src/core/write.cpp).  FASTA's reference is already at the floor
+Python can reach (its own rewrite is *slower*), so what is left is its eighteen
+`handle.write` calls per 1 kb record and the slice objects behind them:
+**0.46 µs** a record against 2.12 (**4.6×**).  FASTQ's reference walks the
+quality list through a dict a base at a time, which is **4.81×** reachable with
+`bytes.translate` alone, and the kernel takes it: **0.43 µs** against 5.23
+(**12.1×**), with the encoder on its own at **9.3×**.  QUAL is the worst writer
+in the family in absolute terms — 15.40 µs for 150 bases, 103 ns a base, because
+every score is formatted with `"%i" % round(q, 0)` and the lines are packed by
+popping from the front of a list — and it is the largest win of the three:
+**0.93 µs** against 15.22 (**16.4×**).  Every row is gated over the whole file
+against `SeqIO.write` before any time is quoted, and the reference's awkward
+branches are reproduced rather than tidied: an unwrapped empty FASTA record
+writes a blank line where a wrapped one writes nothing, a QUAL width of one to
+five takes the `pop(0)` branch in Python because the kernel does not have it, and
+a score above PHRED 93 is truncated *and warned about*.  The flat-file writers
+are `parity`, measured and deferred — a byte-identical GenBank record means
+writing the annotations dict and the FEATURES table, which this package only
+reads.
 
 ## Why this exists
 
@@ -242,10 +343,18 @@ src/
     fastq.py                  # gzip-sniffing FASTQ reader, zero-copy grid, name index
                               #   (the index reads gzip as well as plain files)
     fasta.py                  # FASTA index over the kernel + zero-copy grid
+    genbank.py                # the flat files: GenBank / EMBL / SwissProt, by id
+    seqfeature.py             # the FEATURES table: Feature / Location / Position / Qualifier
+    annotations.py            # the header keys of SeqRecord.annotations, in file order
     seqops.py                 # revcomp / GC / k-mers / translate, str-friendly wrappers
     _translate.py             # translation: the reference's rules, and a kernel
     sequtils.py               # the half of Bio.SeqUtils that measures: GC123, GC_skew,
                               #   molecular_weight, seq1/seq3, nt_search, CAI
+    protparam.py              # ProteinAnalysis: the eleven measurements
+    protparam_data.py         # generated: the ten scales, as the reference spells them
+    _protparam_data.py        # the scale classes, no data
+    _iupac_data.py            # the IUPAC ambiguity alphabet, for nt_search
+    isoelectric_point.py      # the one that needs a solver rather than a sum
     checksum.py               # the four sequence checksums: crc32, crc64, gcg, seguid
     interop.py                # our records <-> Bio.SeqRecord, and the writers
     restriction.py            # the 1,088 restriction enzymes: one class + a table
@@ -268,10 +377,17 @@ src/
     fastq.{hpp,cpp}           # FASTQ record scanner over a byte span, + name index
                               #   over a plain or an inflated span, one code path
     fasta.{hpp,cpp}           # FASTA offset index: fetch and slice by offset
+    flatfile.{hpp,cpp}        # GenBank / EMBL / SwissProt: one pass, records by
+                              #   offset, residues de-columned on demand
+    annotations.{hpp,cpp}     # the flat-file header keys, in the order they are read
+    location.{hpp,cpp}        # the location grammar: fuzziness, strands, joins kept
+    feature.{hpp,cpp}         # the FEATURES table: key column, location, qualifiers
     inflate.{hpp,cpp}         # gzip inflation (libdeflate) into one owned buffer
     seqops.{hpp,cpp}          # revcomp / GC / k-mers / translate, dispatched to AVX2
     sequtils.{hpp,cpp}        # counts and sums for Bio.SeqUtils: GC123 / GC_skew /
                               #   molecular_weight / gcg / crc64, dispatched to AVX2
+    protparam.{hpp,cpp}       # the sums and the pI solver for ProteinAnalysis
+    write.{hpp,cpp}           # FASTA / FASTQ / QUAL writers: one buffer, one crossing
     build_config.hpp.in       # template CMake fills in with the build identity
 tests/                        # pytest suite; scaffold invariants + the kernels
 third_party/

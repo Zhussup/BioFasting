@@ -23,9 +23,16 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
 from . import _core
+from .annotations import AnnotationReference, read_annotations, to_reference
 from .checksum import crc32, crc64, gcg, seguid
 from .fasta import FastaGrid, open_fasta, open_fasta_grid, read_fasta
 from .fastq import FastqGrid, open_fastq, open_fastq_grid, open_fastq_index, scan_fastq
+from .genbank import (
+    FLAT_FILE_FORMATS,
+    FlatFileRecord,
+    open_genbank,
+    read_genbank,
+)
 from .interop import (
     fasta_seqrecords,
     fastq_seqrecords,
@@ -33,8 +40,19 @@ from .interop import (
     to_seqrecord,
     write_fasta,
     write_fastq,
+    write_qual,
 )
 from .seqops import BiopythonWarning, count_kmers, gc_fraction, reverse_complement, translate
+from .seqfeature import (
+    Feature,
+    Location,
+    Part,
+    Position,
+    Qualifier,
+    read_features,
+    to_location,
+    to_seqfeature,
+)
 from .isoelectric_point import IsoelectricPoint
 from .protparam import ProteinAnalysis
 from .sequtils import (
@@ -51,6 +69,7 @@ from .sequtils import (
 
 __all__ = [
     "__version__",
+    "AnnotationReference",
     "BiopythonWarning",
     "CodonAdaptationIndex",
     "FastaGrid",
@@ -59,6 +78,13 @@ __all__ = [
     "GC_skew",
     "IsoelectricPoint",
     "ProteinAnalysis",
+    "FLAT_FILE_FORMATS",
+    "Feature",
+    "FlatFileRecord",
+    "Location",
+    "Part",
+    "Position",
+    "Qualifier",
     "best_cpu_level",
     "build_info",
     "count_kmers",
@@ -77,7 +103,11 @@ __all__ = [
     "open_fastq",
     "open_fastq_grid",
     "open_fastq_index",
+    "open_genbank",
+    "read_annotations",
     "read_fasta",
+    "read_features",
+    "read_genbank",
     "reverse_complement",
     "scan_fastq",
     "seq1",
@@ -86,10 +116,14 @@ __all__ = [
     "seqops_level",
     "six_frame_translations",
     "supported_cpu_levels",
+    "to_location",
+    "to_seqfeature",
     "to_seqrecord",
+    "to_reference",
     "translate",
     "write_fasta",
     "write_fastq",
+    "write_qual",
     "xGC_skew",
 ]
 

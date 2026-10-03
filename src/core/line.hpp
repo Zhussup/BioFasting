@@ -18,6 +18,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -103,6 +104,46 @@ struct Line {
 // buffer: a file with no carriage return in it must not be scanned twice just
 // to discover that.
 Line read_line(const char* data, std::size_t size, std::size_t at) noexcept;
+
+// The keyword a flat-file header line introduces: the first token of the line's
+// first `width` columns.  A continuation line is indented to exactly that
+// column and so has no keyword of its own, which is what makes this the rule
+// that says which lines belong to the keyword above them.  Comparing whole
+// tokens rather than byte prefixes is what keeps "ID" from matching "IDE" and
+// "SQ" from matching "SQX".
+//
+// Both header readers need this and neither may have its own copy: the record
+// scan walks the same lines the annotations reader does, and two answers to
+// "which keyword is this" is two answers to "which block is this".
+inline std::string_view keyword_at(const Line& line, std::size_t width) noexcept {
+  const std::size_t upto = std::min(width, line.len);
+  std::size_t end = upto;
+  while (end > 0 && is_python_space(line.text[end - 1])) --end;
+  std::size_t begin = 0;
+  while (begin < end && is_python_space(line.text[begin])) ++begin;
+  return std::string_view(line.text + begin, end - begin);
+}
+
+// Python's `str.strip()`.  Both flat-file readers take values apart with it, and
+// the rule they take them apart by -- which whitespace counts, and that it is
+// stripped from both ends and not one -- is the same rule the line reader
+// already owns, so it lives here rather than in either reader.
+inline std::string_view strip_view(std::string_view text) noexcept {
+  std::size_t begin = 0;
+  std::size_t end = text.size();
+  while (begin < end && is_python_space(text[begin])) ++begin;
+  while (end > begin && is_python_space(text[end - 1])) --end;
+  return text.substr(begin, end - begin);
+}
+
+// A keyworded line's value: everything past the keyword column, right-stripped.
+// Left-stripping is deliberately *not* done here -- a value's leading spaces are
+// meaningful to the one caller that joins continuation lines, and the callers
+// that want Python's `.strip()` say so.
+inline std::string_view value_at(const Line& line, std::size_t width) noexcept {
+  if (line.len <= width) return std::string_view();
+  return rstrip_view(line.text + width, line.len - width);
+}
 
 inline void append_rstripped(std::string& out, const Line& line) {
   out.append(line.text, rstripped_size(line.text, line.len));

@@ -53,10 +53,18 @@ Total: 476 MB of content, 647 MB on disk.
 
 Two input families are **generated, not stored**: the FASTA/FASTQ reads come from
 `gen_data.py`'s SHA-256 keystream (the files above are its output, kept on disk so
-a run does not have to re-derive them), and the protein corpus `run.py` uses for
-`protparam-*` is derived in memory at run time by `make_protein_corpus()`.  Both
-are integer-only counter-mode constructions with no float threshold anywhere, so
-the same command yields the same bytes and the same residues on any machine.
+a run does not have to re-derive them), and the protein and flat-file corpora are
+derived in memory.  `run.py` builds the protein corpus for `protparam-*` through
+`make_protein_corpus()`, and `seqio_corpus.py` builds the GenBank, EMBL and
+SwissProt files that `rank_seqio.py` measures.  All of them are integer-only
+counter-mode constructions with no float threshold anywhere, so the same command
+yields the same bytes and the same residues on any machine.
+
+`seqio_corpus.py` is the one place the corpus is not wholly ours: GenBank and
+EMBL are emitted by `Bio.SeqIO.write`, because those two have a writer and a
+hand-written INSDC record is a week of finding out where the columns are.
+SwissProt has no writer upstream, so that emitter is written out here.  The
+module says so at the top rather than leaving it to be discovered.
 
 ### What "realistic" FASTQ means here
 
@@ -140,6 +148,58 @@ than silent until the end.
   the best pure-Python rewrite, kept because it is the number that says whether a
   kernel was worth writing at all — 1.10× to 1.84×, against 36.9×, 43.8× and
   37.7× for the three that got one.
+
+The flat-file corpus is measured by its own script rather than by `run.py`,
+because a corpus built in memory at run time is not a file a reader can map.
+`bench/bench_genbank.py` writes each generated row to disk and measures three
+implementations on it — `Bio.SeqIO.parse`, the smallest pure-Python parser there
+is (`rank_seqio.minimal_parse`, **imported rather than copied** so the two cannot
+drift), and `biofasting.read_genbank` — under the same all-or-nothing digest gate
+as everything else, on the four fields the kernel produces rather than on the
+two the rewrite does.  `bench/rank_seqio.py` is the ranking pass that came
+before it: the same corpus split into the reference's own time, the object floor
+and a whole-file C-speed scan, which is where the target for the kernel came
+from.  `bench/bench_features.py` is the other half: the same corpus rows, but the
+gate is over every **feature** rather than over the record — type, location as
+canonical nested tuples (kind and edges, not objects, because Biopython's
+positions compare by integer value and an object comparison cannot see a `<` that
+was flattened), qualifiers and status — and it measures three paths: the
+reference, the feature reader, and the reader plus `to_seqfeature`, so the column
+that is this milestone's work is separate from the column that is object
+construction.  It also re-derives M19's per-feature target as the difference
+between two rows that differ only in feature density, per *record* and not per
+file.  `bench/bench_annotations.py` is the third half: the two bare/annotated
+pairs the M22 target was measured on, gated on the **annotations dict** — every
+key, its position in the insertion order and every value, references through
+`to_reference` so both sides are the reference's own objects.  The key order is
+in that digest and has to be, because `dict.__eq__` is order-blind and would pass
+a reader that emitted a fixed key list.  Its marginal block subtracts two
+per-*record* times within a pair, and the timed unit is the parse alone on both
+sides: the reduction that the gate compares costs more on the annotated row than
+on the bare one, so a timing that included it would put that difference inside
+the delta.
+
+The other direction — writing — has its own pair of scripts, because the triage
+filed every writer as `parity` on an assumption nobody had timed.
+`bench/rank_writers.py` is the seventh ranking pass: three formats and three
+floors deep (`reference`, a byte-identical pure-Python `rewrite`, and the raw
+`payload`), gated byte-for-byte before any time is quoted.  It found three
+different answers — the FASTA reference is already at the floor a Python rewrite
+can reach, FASTQ is 4.81× reachable without C at all, and QUAL is the worst
+writer in the family in absolute terms, 103 ns a base — and the flat-file
+writers get a per-method attribution instead of a twin, because a byte-identical
+GenBank record is a page of column rules.  `bench/bench_writers.py` is the
+delivered kernels held to the targets that pass recorded: `write_fasta`,
+`write_fastq` and `write_qual`, gated over the whole file against
+`SeqIO.write`, with the `SeqRecord` path (`from_seqrecord`) and the quality
+encoder timed as their own columns so the conversion in front of a writer is
+never mistaken for the writer.  The scripts that measure on disk —
+`bench_genbank`, `bench_features`, `bench_annotations` and `bench_writers` —
+write their corpus into `build/bench-cache/seqio/` —
+gitignored and disposable, a cache, never a tracked artifact.  (It was
+`bench/data/seqio/` first, which `tests/test_corpus.py` correctly failed: it walks
+`bench/data/` and requires the walk to equal the generator's manifest, so a file
+written there by anything else is a failure by design.)
 
 Each workload also carries a **`biofasting`** row once the package is
 importable, so the thing being built is measured by the same harness, against

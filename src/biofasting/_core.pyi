@@ -45,6 +45,161 @@ class FastaIndex:
     # line is short.  numpy, likewise on demand.
     def grid(self, name: str) -> tuple[object, int]: ...
 
+# One qualifier as the feature reader assembled it: (key, value, has_value,
+# escape_warning, escape_text).  `has_value` false is the `/pseudo` form, whose
+# value the reference stores as `""` and whose second occurrence it drops
+# outright.  `escape_warning` and `escape_text` are the reference's NCBI escaping
+# warning *reported* rather than emitted: it is about the value as it stands
+# before the doubled quotes are undone, so the text has to travel with the flag.
+QualifierTuple = tuple[str, str, bool, bool, str]
+
+# (type, location_or_None, status, message, warnings, qualifiers).  `location`
+# is a `LocationTuple` under the same status vocabulary `parse_location` uses and
+# is `None` for `"parser_error"`, which the reference turns into a missing
+# location plus a warning.
+#
+# `warnings` is the location's own in-parse warnings as `(kind, text)` pairs --
+# `"origin_wrap"` carrying the part's text the reference quotes, `"bond"` with
+# an empty text -- in the reference's own order, one pair per offending *part*.
+FeatureTuple = tuple[
+    str,
+    "LocationTuple | None",
+    str,
+    str,
+    list[tuple[str, str]],
+    list[QualifierTuple],
+]
+
+class FlatFileIndex:
+    # `format` is one of "genbank", "embl" or "swiss" -- the names
+    # `SeqIO.parse` uses, so that a caller passes what it already has.
+    def __init__(
+        self, source: bytes | bytearray | memoryview | mmap.mmap, format: str
+    ) -> None: ...
+    def __len__(self) -> int: ...
+    def __contains__(self, id: str) -> bool: ...
+    def __getitem__(self, id: str) -> bytes: ...
+    def __iter__(self) -> Iterator[str]: ...
+    def keys(self) -> list[str]: ...
+    def format(self) -> str: ...
+    def name(self, id: str) -> str: ...
+    def description(self, id: str) -> str: ...
+    def sequence_length(self, id: str) -> int: ...
+    def sequence_slice(self, id: str, start: int, end: int) -> bytes: ...
+    # Every record in file order, so a stream parse pays no per-record lookup.
+    # The same four fields as the per-id calls above, and nothing else: the
+    # annotations dict and the FEATURES table are read on demand instead (see
+    # `annotations` and `features` below).
+    def records(self) -> list[tuple[str, str, str, bytes]]: ...
+    # (offset, sequence_offset, sequence_end, length), as byte offsets into the
+    # buffer the index was built over.
+    def location(self, id: str) -> tuple[int, int, int, int]: ...
+    def offsets(self) -> list[int]: ...
+    def features(self, id: str) -> tuple[bool, str, list[FeatureTuple]]:
+        """The record's FEATURES table, as `(ok, message, features)`.
+
+        `ok` is False where this reader declined the table, and `message` then
+        says which line did it.  It declines where the reference only *warns*
+        and carries on -- a location that wraps its parentheses without breaking
+        at a comma, a line too short to hold a feature, an over-indented
+        location column, white space after a qualifier's `=`, a continuation
+        with no qualifier above it -- because a repair reproduced differently is
+        a feature that looks right and is not.  It also declines a table whose
+        header facts it could not establish, since the locations would then be
+        read under inputs the reference never used.
+
+        A record with no feature block is `ok` with an empty list, which is an
+        answer and not a refusal.  SwissProt's `FT` block is a refusal: it is a
+        different grammar, and "no features" and "features not reproduced" are
+        not the same statement.
+        """
+        ...
+    def annotations(self, id: str) -> tuple[bool, str, list[str], dict]:
+        """The record's header, as `(ok, message, keys, table)`.
+
+        `keys` is the list of annotation keys the header *created*, in the order
+        it created them.  That order is the file's, not a fixed list: the
+        reference inserts a key when the line stating it is consumed, so a
+        `COMMENT` above the first `REFERENCE` puts `comment` before
+        `references`, and a dict compares and prints by its insertion order.
+        Membership in `keys` is also what says a key *exists* -- EMBL creates
+        `data_file_division` for every ID line even when the field is blank,
+        where GenBank skips `molecule_type` on an empty column -- so an empty
+        value in `table` means what the reference means by it rather than
+        standing in for an absence.
+
+        `table` holds the values, and is the reading rather than the naming:
+        which of them become keys of `SeqRecord.annotations` is decided one
+        level up, because GenBank and EMBL disagree about it.  `references` is a
+        list of `(title, authors, consrtm, journal, pubmed_id, medline_id,
+        comment, location)` with the location already in Python coordinates.
+
+        `ok` is False where this reader declined the header, and `message` then
+        names the shape it declined -- a structured comment, `NID`, `PID`,
+        `DBSOURCE`, `SEGMENT`, a `LOCUS` line in the pre-229.0 layout, or a
+        format whose header is not reproduced at all (SwissProt's).  It declines
+        rather than return a dict missing a key the reference would have set: a
+        dict that is wrong is worse than a dict that is absent.  The refusal is
+        per record, so the sequence and the other records stay usable.
+        """
+        ...
+
+# --- feature locations -------------------------------------------------------
+#
+# `Location.fromstring` and `Position.fromstring`, as kernels.  A location is
+# not a pair of integers and these do not flatten one into a pair: `complement`
+# carries a strand, `<`/`>` make an end fuzzy, `(3.9)` is a boundary known only
+# to lie between two bases, `one-of(...)` is a choice, and `^` is a zero-length
+# junction.
+#
+# A position is (kind, value, left, right, choices): `value` is what the
+# reference's `int(position)` returns and what every comparison uses, `left`/
+# `right` are the two edges of a `within` boundary, and `choices` is the
+# `one_of` set.  `kind` indexes the enum in src/core/location.hpp, where the
+# names are `exact before after within one_of uncertain unknown`.
+PositionTuple = tuple[int, int, int, int, tuple[int, ...]]
+PartTuple = tuple[PositionTuple, PositionTuple, int, str]
+LocationTuple = tuple[str, tuple[PartTuple, ...]]
+
+def parse_location(
+    text: str,
+    length: int | None = ...,
+    circular: bool = ...,
+    stranded: bool = ...,
+) -> tuple[str, LocationTuple | None, str, list[tuple[str, str]]]:
+    """Read a feature location.
+
+    Returns `(status, location, message, warnings)`.  `warnings` is what the
+    reference emits from inside the parse, *reported* rather than emitted: the
+    kernel says what it found, the Python layer says the words.  It is a list of
+    `(kind, text)` and not a pair of flags because the reference emits one
+    warning per offending part -- `join(30..5,60..2)` on a circle repairs two
+    parts and warns twice -- and because the order is observable: a `bond` part
+    warns before a part after it that wraps the origin.  `kind` is
+    `"origin_wrap"`, whose `text` is the part the reference quotes, or `"bond"`,
+    whose wording is fixed and whose `text` is empty.
+
+    The status is `"ok"`, `"parser_error"` -- where the reference raises
+    `LocationParserError`, which its feature consumer catches and turns into a
+    missing location plus a warning, so it is a behaviour and not just an
+    error -- or `"refused"`, where the reference raises something else, or
+    accepts the string while silently discarding text from it.  A refusal is a
+    design difference: it is this reader saying it will not guess.
+
+    `length` is the record's *declared* size and may be `None`, which is not the
+    same fact as zero -- the origin-wrapping repair is skipped for a record with
+    no size and taken for one that declares zero.
+    """
+
+def parse_position(
+    text: str, offset: int = ...
+) -> tuple[str, PositionTuple | None, str]:
+    """Read one end of a location: `Position.fromstring(text, offset)`.
+
+    `offset` is 0 for an end position and -1 for a start position, the
+    reference's own convention; anything else is refused.
+    """
+
 class FastqIndex:
     def __init__(self, source: bytes | bytearray | memoryview | mmap.mmap) -> None: ...
     # `source` is a whole gzip stream, BGZF included; it is inflated with
@@ -175,5 +330,62 @@ def translate(
     `protein` then holds only the codons before `codon`, and the caller redoes
     the job -- and 2 when `stop_is_error` met a stop at `codon`.  `code` is 256
     bytes and `amino` 64; both come from `_translate._kernel_tables`.
+    """
+    ...
+
+# --- the writers -------------------------------------------------------------
+#
+# One call for the whole file, not one per record: the reference already writes
+# record by record, and the cost these remove is the interpreter crossing, so a
+# kernel reached once a record would pay it back.  Each returns the whole file
+# as one `bytes` and takes an iterable of tuples -- `(title, sequence)` for
+# FASTA, `(title, sequence, quality)` for FASTQ, `(title, quality)` for QUAL --
+# in this package's own form: bytes, the marker character excluded, and a
+# quality string already phred+33.  Every function here is byte-for-byte
+# Biopython's own output; the differential tests are the gate.
+
+def write_fasta(
+    records: Iterator[tuple[bytes, bytes]] | list[tuple[bytes, bytes]],
+    wrap: int = 60,
+) -> bytes:
+    """The whole FASTA file, lines wrapped at `wrap`.
+
+    `wrap` of 0 is the reference's unwrapped branch, which writes a newline even
+    for an empty sequence; a wrapped empty record writes no base line at all.
+    """
+    ...
+
+def write_fastq(
+    records: Iterator[tuple[bytes, bytes, bytes]] | list[tuple[bytes, bytes, bytes]],
+) -> bytes:
+    """The whole FASTQ file: four lines a record, no wrapping.
+
+    The quality string is copied rather than decoded, so the caller must already
+    hold phred+33; a sequence and quality of different lengths is a
+    ``ValueError``.
+    """
+    ...
+
+def write_qual(
+    records: Iterator[tuple[bytes, bytes]] | list[tuple[bytes, bytes]],
+    wrap: int = 60,
+) -> bytes:
+    """The whole QUAL file: decimal scores cut at the last space in a window.
+
+    That cut is the reference's *fast* branch, `data.rfind(" ", 0, wrap)` -- the
+    one `SeqIO.write` takes -- and not the `pop(0)` loop of `to_string`.  Where
+    the reference would loop forever -- no space anywhere in a window -- this
+    raises ``ValueError`` instead.  `wrap` of 0 means one line a record.
+    """
+    ...
+
+def phred_to_sanger(
+    scores: bytes | bytearray | memoryview,
+) -> bytes:
+    """PHRED scores as the Sanger ASCII string, ``min(126, score + 33)`` a byte.
+
+    Truncation at 93 is the reference's own behaviour on the slow path it takes
+    for a score its 0..93 table has no entry for, and it is reproduced rather
+    than corrected.
     """
     ...

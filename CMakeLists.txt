@@ -80,9 +80,14 @@ set(BIOFASTING_CORE_SOURCES
   src/core/line.cpp
   src/core/fastq.cpp
   src/core/fasta.cpp
+  src/core/flatfile.cpp
+  src/core/annotations.cpp
+  src/core/feature.cpp
+  src/core/location.cpp
   src/core/seqops.cpp
   src/core/sequtils.cpp
   src/core/protparam.cpp
+  src/core/write.cpp
   src/core/inflate.cpp)
 
 # libdeflate: the gz path's decompressor, and the one third-party dependency the

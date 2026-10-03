@@ -854,3 +854,689 @@ is amortised differently because a 10,000-residue protein pays 9.47 µs of count
 to resolve a pH to four decimal places.  `MeltingTemp` stays unclaimed: the fifth
 pass measured `Tm_NN` at 23.40 µs on a 60-mer and found no rewrite that beats it,
 and no kernel has been built against it.
+
+## Phase 2 ranking, sixth pass: the remaining `SeqIO` formats (PLAN 2.4, 2026-10-03)
+
+PLAN 2.4 says "remaining `SeqIO` formats, hot-path-first, based on Phase 0
+ranking".  The Phase 0 ranking had already answered it, and the answer was
+*no*: every format left in `Bio.SeqIO` is filed `parity` in
+`inventory/biopython_triage.csv` — "worth having for drop-in compatibility, no
+large win expected" — and the `perf` rows there are all closed.  `FastaIO` (13
+rows), `QualityIO` (28) and `_index` (21), 62 of them, were delivered in Phase 1.
+
+A prefill is not a decision.  This pass asks the triage's question again with a
+timer, over the three flat-file formats that carry essentially all of the
+world's sequence data: **GenBank**, **EMBL** and **SwissProt**.
+
+```sh
+python3 bench/rank_seqio.py
+```
+
+`bench/data/` is DNA and holds none of them.  The corpus is
+`bench/seqio_corpus.py`, generated rather than stored, on the same contract as
+`bench/gen_data.py`: SHA-256 in counter mode, every decision in integer
+arithmetic, no float threshold.  GenBank and EMBL are emitted by
+`Bio.SeqIO.write` — those two have a writer, and hand-writing a parser-correct
+INSDC record is a week spent learning where column 22 is.  SwissProt has **no
+writer** upstream (`Reading format 'swiss' is supported, but not writing`), so
+that emitter is written out here and the parser that accepts it is the check on
+it.  `tests/test_seqio_corpus.py` holds the corpus to its own promises —
+record counts, lengths, ids, alphabets, byte-identical rebuilds — before any
+number below rests on it.
+
+### The question that decides
+
+A parse spends its time in three places: moving bytes, building Python objects,
+and its own logic.  C can take the first two and not the third, so each format
+is measured against both floors:
+
+* **objects** — build the same `SeqRecord` tree from scalars already in hand,
+  locations, qualifiers and annotations included.  This is Python work no parser
+  avoids and no kernel can go below.
+* **scan** — a whole-file `bytes.translate`/`upper`: what moving the bytes costs
+  at C speed with nothing above it.
+
+Everything the reference spends above the sum of the two is its own
+line-by-line logic, and that is what a kernel removes.
+
+| corpus | records | MB | ref µs/rec | objects | scan | lines | ref / floor |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `genbank-1kb` | 3,000 | 5.19 | **48.6** | 5.2 | 1.9 | 5.0 | **6.9×** |
+| `genbank-10kb` | 300 | 4.38 | 205.5 | 28.8 | 16.8 | 34.6 | 4.5× |
+| `genbank-1kb-bare` | 300 | 0.47 | **28.4** | 1.0 | 1.5 | 2.0 | **11.1×** |
+| `embl-1kb` | 3,000 | 5.38 | **46.8** | 4.5 | 1.9 | 5.3 | **7.3×** |
+| `embl-10kb` | 300 | 4.63 | 223.0 | 28.5 | 16.8 | 37.4 | 5.0× |
+| `swiss-300aa` | 5,000 | 4.68 | 47.5 | 8.3 | 1.1 | 2.8 | 5.1× |
+
+Python 3.13.5, Linux 6.12.107+deb13-amd64, 13th Gen Intel i5-13420H, median of
+seven calls after one warm-up; `objects` is a median of five, because building a
+5 MB file's worth of `SeqRecord` objects five times is already the slowest thing
+in the script.
+
+> **Re-measured later the same day, and this column does not reproduce.**  On an
+> idle machine this script returns SwissProt 36.4 rather than 47.5,
+> `genbank-10kb` 183.9 rather than 205.5, `genbank-1kb` 51.0 rather than 48.6,
+> and an object floor of 3.3 for `genbank-1kb` rather than 5.2.  Every row moved,
+> in both directions, the widest by 1.6×.  **Read the absolute µs
+> below as approximate and the `ref/floor` column as indicative.**  What
+> survives — and what the pass was for — is the shape: the reference is still
+> 5.4–10.3× above its own floor.  The delivered numbers at the end of this file
+> are timed in one harness in one run and do not rest on this column.
+
+**The triage's verdict does not survive this.**  The reference spends 47–49 µs
+per kilobase GenBank or EMBL record and 28 µs on the same record with no
+features, where the bytes cost 1.5 and the object tree costs 1.0.  Between
+**two-thirds and nine-tenths** of the reference's time is its own logic — a
+line-at-a-time `startswith` dispatch, an `ORIGIN` block assembled by a nested
+loop, a location string re-parsed per feature.  None of that is object
+construction, and none of it is data movement, which is why the headroom column
+is 4.5×–11× rather than the 1.0×–1.2× that `parity` predicted.
+
+The feature cost is measured directly rather than inferred.  `genbank-1kb` and
+`genbank-1kb-bare` are the same sequences from the same seed, built with feature
+density as the only difference: 48.6 µs against 28.4 µs says one feature per
+kilobase costs **20.2 µs**, and the `objects` column says building a `SeqFeature`
+with its location and three qualifiers costs 4.2 µs of it.  The other 16 µs is
+the reference reading the location string and the qualifier block.
+
+The same measurement found two things about the corpus itself, both of which
+were my errors and both of which the gates caught.  The feature layout first
+drew from the **same** keystream as the sequences, so `genbank-1kb` and
+`genbank-1kb-bare` diverged from their second record onward and the one pair the
+whole decomposition rests on was not a pair at all; it draws from its own stream
+now.  And EMBL right-aligns the residue count on the last line of every `SQ`
+block, which a naive extraction appends to the sequence — the corpus's own
+comparison column is what caught that one.
+
+### The smallest rewrite there is
+
+The floor under a *Python* rewrite, measured because it is the number that says
+whether the win needs C at all: split the file on `//`, take the id from the
+first line, strip the sequence out of the `ORIGIN`/`SQ` block.  It reproduces
+**ids and sequences exactly** — asserted on every row before its time is
+quoted — and produces nothing else: no features, no description, none of the
+nine annotations.
+
+| corpus | ref µs/rec | rewrite µs/rec | ratio | ids and sequences identical |
+|---|---:|---:|---:|---|
+| `genbank-1kb` | 48.6 | 5.5 | **8.9×** | yes |
+| `genbank-10kb` | 205.5 | 34.9 | 5.9× | yes |
+| `genbank-1kb-bare` | 28.4 | 4.6 | 6.0× | yes |
+| `embl-1kb` | 46.8 | 5.3 | **8.8×** | yes |
+| `embl-10kb` | 223.0 | 34.0 | 6.6× | yes |
+| `swiss-300aa` | 47.5 | 3.6 | **13.2×** | yes |
+
+This is a **floor and not a replacement**, and the distinction is the whole
+point of printing it: the rewrite is not asked to produce what the reference
+produces, so its ratio is not a speedup anyone could ship.  What it establishes
+is that the reference's cost is not in the data — six to thirteen times the
+whole job is available before a single line of C is written.
+
+### Verdict
+
+**`GenBankIterator`, `EmblIterator` and `SwissIterator` are `perf`, not
+`parity`.**  The triage filed them as compatibility work on the reasoning that a
+flat-file parse is "no large win"; measurement says the reference is 4.5×–11×
+above the floor that C cannot cross and 6–13× above a rewrite that drops half
+the output.  That is a real gap, and it is in the reference's own logic.
+
+The writers (`GenBankWriter`, `EmblWriter`, `ImgtWriter`) stay `parity`:
+nothing here measured them, and writing is a different job from parsing.
+
+**Not yet a plan to build.**  What this pass produces is the measured target the
+project's first rule requires, three of them, with the binding constraint named:
+the object floor is 1.0–8.3 µs per record and it is what a kernel cannot get
+below.  `genbank-1kb-bare` — 11.1× over the floor, 6.0× over a rewrite, and no
+feature objects in the way — is the row to build first.
+
+## Delivered result: the flat-file kernel — GenBank, EMBL, SwissProt (M20, 2026-10-03)
+
+The sixth pass ranked the three flat-file iterators as `perf` and named the row
+to build first.  This is what was built against that ranking: one pass over the
+mapped file, in C++, with no record tree on the Python side until a caller asks
+for one.
+
+```sh
+.venv/bin/python bench/bench_genbank.py --repeat 9
+```
+
+The kernel is `FlatFileIndex` in [`src/core/flatfile.hpp`](../src/core/flatfile.hpp)
+and [`flatfile.cpp`](../src/core/flatfile.cpp), reached from Python as
+`biofasting.open_genbank()` / `read_genbank()`.  It reads a file once, records
+where each record's header and residues are, and reproduces **four fields**:
+`id`, `name`, `description` and the sequence.  Corpus: the sixth pass's own, all
+six rows, **11,900 records and 24.7 MB**, generated rather than stored on the
+same contract as `bench/gen_data.py`.  Every row is digest-gated on all four
+fields against `Bio.SeqIO.parse` **before** any time is quoted, and the gate
+compares all-or-nothing rather than record by record: a mismatching row is a bug
+for `tests/test_genbank.py` to localise, not something to be read out of a table.
+
+| corpus | records | MB | ref µs/rec | rewrite | ours | ref/ours | ours MB/s | gate |
+|---|---:|---:|---:|---:|---:|---:|---:|:--:|
+| `genbank-1kb` | 3,000 | 5.188 | 43.32 | 5.13 | **3.52** | **12.3×** | 491.6 | OK |
+| `genbank-10kb` | 300 | 4.381 | 167.07 | 33.86 | **24.97** | 6.7× | 585.0 | OK |
+| `genbank-1kb-bare` | 300 | 0.470 | 25.09 | 4.30 | **3.22** | 7.8× | 487.5 | OK |
+| `embl-1kb` | 3,000 | 5.375 | 42.49 | 5.39 | **3.92** | **10.8×** | 457.2 | OK |
+| `embl-10kb` | 300 | 4.628 | 183.19 | 34.94 | **27.99** | 6.5× | 551.2 | OK |
+| `swiss-300aa` | 5,000 | 4.679 | 26.95 | 3.73 | **1.86** | **14.5×** | 502.5 | OK |
+
+Median of nine passes after one warm-up, the reference and both alternatives
+timed in the same harness on the same file; the table above is that run.  Build:
+GNU 14.2.0, `-O3`, C++20, x86_64, `seqops_level = avx2`, nanobind 3.1.0,
+libdeflate 1.23 vendored, Python 3.13.5, 13th Gen Intel i5-13420H.
+
+**How much of those digits is real.**  The script was run three times — twice at
+five passes, once at nine — and the per-record cost moves between them by 2–16%
+depending on the row, the two shortest rows the widest: `embl-1kb` 3.92/4.29/4.53
+and `swiss-300aa` 1.86/1.86/2.11 µs, against `genbank-1kb-bare` at
+3.22/3.22/3.29.  So the ratios carry roughly that much uncertainty, the decimal
+places above are a courtesy rather than a precision, and a difference of 10%
+between two rows here is not a difference.  What is well outside the spread is
+the thing being claimed: the reference is 6–14× away, not 1.1×.  (The
+nine-pass run is tabulated because it is the most-sampled, not because it is
+the fastest — it is not the fastest on every row.)
+
+**All six rows gate OK**, which is the result that matters most here: the
+reference's four fields and this reader's are identical on all 11,900 records.
+That covers the shape the sixth pass's own comparison column had already caught a
+naive extraction getting wrong — EMBL's right-aligned residue count on the last
+line of every `SQ` block, which an extraction that strips spaces and not digits
+appends to the sequence — and it covers the rules no corpus row can show, because
+the reference's writer puts the same string on both the ID and the `AC` lines and
+writes every residue in capitals.  Those are asserted by fixtures spliced out of
+the writer's own output instead: an EMBL record whose `AC` disagrees with its ID
+line, a lowercase `SQ` block, a `VERSION` carrying a suffix.  The kernel is
+deliberately **stricter** than
+the reference in one place and refuses rather than reproduces a guess: a GenBank
+`ORIGIN` line whose column 10 is not a space makes Biopython warn and shift the
+line by a byte; this reader raises and names the byte offset.  That refusal, the
+`CONTIG` refusal, and the duplicate-id refusal are asserted in
+`tests/test_genbank.py` beside the agreements.
+
+**`ours` beats the pure-Python rewrite on every row while producing more.**  The
+rewrite extracts ids and sequences; this reader also produces the name and the
+description, and is still 1.2–2.0× faster than it (3.22 against 4.30 on the bare
+row, 1.86 against 3.73 on SwissProt).  So C was worth writing here — but the
+rewrite column is why that sentence is worth saying at all: a pure-Python parse
+of the same bytes was already 5–7× the reference, which is where most of the
+distance came from.
+
+**What this ratio is not.**  `ours` produces four fields and nothing else — no
+FEATURES table, no annotations dict, no `SeqRecord` — so `ref/ours` is a ratio
+against a reference doing strictly more work, exactly as the rewrite's is.  The
+script prints that next to the table rather than in a footnote.  It is also why
+the delivered numbers cross below the sixth pass's floor: `genbank-1kb-bare` was
+ranked at 28.4 µs against a floor of 2.5 (objects 1.0 + scan 1.5), and this
+reader does the same record in 3.22 — above the scan alone, below the sum.  That
+is not a kernel beating a floor.  The floor's `objects` term built the
+reference's *full* `SeqRecord` tree, features and annotations included, and this
+kernel deliberately builds none of it; the floor stops bounding this design the
+moment the output changes shape.  What still bounds it is the 1.5 µs whole-file
+scan, and 3.22 against 1.5 — 2.1× — is the honest remaining headroom on that
+row.  Throughput barely moves with record size — 396–585 MB/s over the three
+runs, on records that differ by 30× — so the reader is close to
+bandwidth-bound and the remaining win is per-line dispatch, not data movement.
+
+One number from the sixth pass did not reproduce, and the honest thing is to say
+so rather than to reconcile it.  That pass recorded the reference at
+26.4–223.0 µs/rec; re-measured here it is 25.1–183.2, with SwissProt the widest
+at 26.95 against 47.5.  The obvious suspect is the harness — the ranking pass
+parses an in-memory `StringIO` where this one opens the file — and that was
+measured directly: it accounts for **2–7%**, not 76%.  So the sixth pass's own
+script was re-run on the now-idle machine, and **its own column does not
+reproduce either**: SwissProt 47.5 → 36.4, `genbank-10kb` 205.5 → 183.9,
+`genbank-1kb` 48.6 → 51.0, and the object floor for `genbank-1kb` 5.2 → 3.3.
+Every row moved, in both directions, by up to 1.6×, and the machine that
+produced the recorded column is the machine that just disagreed with it.  A
+uniform shift would mean a changed corpus; a shift this shape means the column
+was taken under conditions — frequency state, or load from whatever else was
+running — that this machine no longer reproduces.  The consequence is narrow and
+worth stating plainly: **the sixth pass's absolute µs are approximate and its
+`ref/floor` column should be read as indicative, not as a number to hold a
+kernel to.**  What the pass established is a shape — that the reference's cost on
+a flat file is its own logic rather than the data — and that shape survives: the
+re-run still puts the reference 5.4–10.3× above its own floor, and every row's
+rewrite still reproduces ids and sequences exactly.  The delivery table above
+does not depend on the older column: all three implementations are timed in one
+harness, on one file, in one run.
+
+## Delivered result: the FEATURES table — GenBank and EMBL (M21, 2026-10-03)
+
+M19's decomposition ended on a named target rather than a verdict: a flat-file
+record with one feature per kilobase costs the reference **20.2 µs** more than
+the same record with none, and only **4.2 µs** of that is building the
+`SeqFeature` object — the other **16 µs is the reference reading the location
+string and the qualifier block**.  M20 then wrote down, in its own scope
+statement, that the FEATURES table is what it does not produce.  This is the
+reader built against that target.
+
+```sh
+.venv/bin/python bench/bench_features.py --repeat 9
+```
+
+The kernel is [`src/core/location.{hpp,cpp}`](../src/core/location.hpp) — the
+location grammar, positions preserved rather than flattened — and
+[`src/core/feature.{hpp,cpp}`](../src/core/feature.hpp), reached from Python as
+`biofasting.read_features()` and, for callers who want Biopython's types,
+`biofasting.to_seqfeature()`.  Corpus: the sixth pass's own, the four rows that
+carry features, **6,600 records, 12,000 features and 19.6 MB**; `swiss-300aa` is
+not a row, because SwissProt's `FT` block is `Bio.SwissProt._read_ft`, a second
+grammar sharing nothing with the INSDC scanner that GenBank and EMBL share.
+
+**The gate is over the features, not over id and sequence.**  Every feature of
+every record — the reference's and ours — is reduced to its type, its location
+as the canonical nested tuples `tests/test_location.py` defines, its qualifiers
+and its location status, and the whole file is hashed: a row that disagrees is
+printed `INVALID` and no time from it may be quoted.  The location is reduced to
+kind-and-edges rather than compared as objects, because `==` between two
+positions in Biopython compares integer values and would not see a `<` that had
+been flattened into an exact coordinate.  `ours+interop` is hashed against the
+same reference rows, which is what makes it the same work plus the object.
+
+| corpus | records | features | ref µs/rec | ours | ref/ours | ours+interop | gate |
+|---|---:|---:|---:|---:|---:|---:|:--:|
+| `genbank-1kb` | 3,000 | 3,000 | 48.83 | **9.82** | **4.97×** | 15.06 | OK |
+| `genbank-10kb` | 300 | 3,000 | 205.70 | **84.18** | 2.44× | 134.60 | OK |
+| `embl-1kb` | 3,000 | 3,000 | 47.80 | **10.00** | **4.78×** | 14.98 | OK |
+| `embl-10kb` | 300 | 3,000 | 219.90 | **86.98** | 2.53× | 139.53 | OK |
+
+Median of nine passes after one warm-up, all three implementations timed in the
+same harness on the same file, build as above.  `ref` is `Bio.SeqIO.parse` over
+the whole record, which also produces the annotations dict and the references,
+so `ref/ours` is a ratio against a reference doing strictly more work and is not
+the number to quote.
+
+**The number to quote is the marginal one**, because it is the measurement M19
+made, re-derived here rather than trusted.  `genbank-1kb` and
+`genbank-1kb-bare` are the same 1 kb records from the same seed with feature
+density as the only difference (3,000 records against 300 — the corpus sizes the
+counts to make the two files about equally long in bytes, so the subtraction is
+of two *per-record* times and never of two file times):
+
+| | per feature | against M19's target |
+|---|---:|---|
+| reference, measured now | 23.71 µs | recorded 20.2 |
+| **ours** — the reading, no Python object | **7.62 µs** | 16 µs of "location + qualifiers" |
+| ours + `to_seqfeature` | 12.41 µs | — |
+
+Run three times at nine passes: reference 23.62/23.91/23.71, ours
+7.97/7.56/7.62, interop 12.88/12.66/12.41.  So the reference's own 20.2 does not
+reproduce either — it lands 23.6–23.9, which is inside the ±20% this file has
+already recorded for that pass and is the same caveat M19 wrote above, not a new
+one.  **The shape reproduces**, and the shape is what M21 was built against: the
+reference spends ~16 µs per feature on the location string and the qualifier
+block, and this reader spends **7.62 µs** producing both plus the feature key —
+**2.1×** on the component the milestone named, **3.1×** against the whole 23.7 µs
+the reference actually spends.  The conversion is a separate and much smaller
+story: `to_seqfeature` adds **4.79 µs**, against the **4.2 µs** M19 measured for
+the reference's own object construction — that is parity, and it is why the win
+is entirely in the reading.  A 2–3× on one component is a real number and a
+modest one, and it is reported as it stands.
+
+**Scope, stated rather than discovered.**  This reader reproduces the feature
+key, the location and the qualifiers, and it does **not** reproduce the
+annotations dict — accessions, taxonomy, references, source, comment, date,
+keywords — which stays a `SeqIO.parse` job for now.  Three outcomes are distinguished rather than collapsed into one: `ok`;
+`parser_error`, which is the reference catching its own `LocationParserError`
+and carrying on with `location = None` plus a warning, so the feature keeps its
+type and its qualifiers; and a **refusal** — a FEATURES table this reader cannot
+reproduce, which raises and names the byte offset instead of returning a
+partially parsed table.  Refusing is the deliberate divergence: the reference's
+consumer warns and guesses in places where a wrong feature would then travel
+silently, and a feature that is wrong is worse than a feature that is absent.
+
+**Warnings are reported by the kernel and spoken by Python.**  The reader hands
+back an ordered list of findings — one entry per repaired origin-wrap part
+carrying the text the reference quotes, one per dropped `bond` — and
+`to_seqfeature` emits the reference's own words in the reference's own order,
+which is observable: `join(bond(1),30..5)` on a circle warns about the bond
+first and the wrap second.  Reading features and holding them emits nothing at
+all, so a caller who never builds a `SeqFeature` never installs a warning
+filter; the corpus emits no warnings on either side, which is why the suite's
+`filterwarnings = ["error"]` does not trip on it.  All four rows gate OK on both
+paths, and the differential tests behind them are `tests/test_location.py` (764
+comparisons plus a seeded 4,000-case fuzz), `tests/test_features.py` and
+`tests/test_seqfeature.py`, the three of them comparing against
+`Bio.SeqFeature`/`Bio.GenBank` field for field.
+
+## Measured target: the annotations dict — GenBank and EMBL (M22, 2026-10-03)
+
+M21's scope statement named what it does not produce: the annotations dict —
+accessions, taxonomy, references, source, comment, date, keywords.  This is the
+measurement of that, made before the kernel exists, because a kernel without a
+measured target is a guess with a build step.
+
+```sh
+.venv/bin/python bench/rank_seqio.py      # the last two blocks
+```
+
+Three rows were added to `bench/seqio_corpus.py` for this axis, in their own
+`ANNOT_CORPORA` tuple so that no number already recorded above was measured on a
+different file: `genbank-1kb-annot` and `embl-1kb-annot` (300 records × 1 kb,
+annotated, no features) and `embl-1kb-bare`, the EMBL twin that did not exist.
+Each annotated row draws its residues from the same seed and the same domain
+string as its bare twin, and the blocks are applied **after** the draw, so the
+two files differ in nothing but the header — `tests/test_seqio_corpus.py`
+asserts that rather than trusting it, in both directions.
+
+| corpus | bare µs/rec | annotated | **pair delta** | +taxonomy/keywords | +comment | +references |
+|---|---:|---:|---:|---:|---:|---:|
+| GenBank | 25.06 | 57.01 | **31.95** | 1.21 | 16.44 | 13.28 |
+| EMBL | 24.24 | 42.13 | **17.89** | 3.75 | 3.60 | 11.53 |
+
+Median of seven passes after one warm-up.  The three block columns are each
+measured **one block at a time** against the bare row, not cumulatively, so a
+column is a price and not a difference of prices; they sum to 30.93 and 18.87
+against pair deltas of 31.95 and 17.89, which is the run spread this file has
+already recorded elsewhere.  Run three times: GenBank 31.95/31.39/31.41 (bare
+25.06/25.29/24.88), EMBL 17.89/17.50/18.07 (bare 24.24/24.32/24.13).  The
+comment column is the stable one — GenBank 16.44/16.40/16.49, EMBL
+3.60/3.15/2.79 — and the taxonomy column is the noisy one, because it is one to
+three short lines.
+
+### The comment column is not the price of reading a comment
+
+GenBank pays **16.4 µs** to carry a three-line comment and EMBL pays **3.2 µs**
+for the same text over the same three lines, which is a five-fold difference
+that the text cannot explain.  It is not the reader: both consumers do
+`"\n".join(content)` and nothing else.  It is the *probe* in front of it.  The
+GenBank path runs
+
+```python
+re.search(rf"([^#]+){self.STRUCTURED_COMMENT_START}$", data)
+```
+
+on the first line of every `COMMENT` block, to decide whether the record carries
+a structured comment.  `[^#]+` is greedy, `-START##` is not there, and the
+engine walks the line backwards one character at a time trying to make the
+suffix fit.  Measured against line length, with the pattern compiled once so the
+column is the matching and not the `re` cache lookup the reference pays on top:
+
+| first comment line | chars | µs | µs / char² |
+|---|---:|---:|---:|
+| | 20 | 1.18 | 0.00295 |
+| | 40 | 4.38 | 0.00273 |
+| | 68 | 11.68 | 0.00253 |
+| | 120 | 34.21 | 0.00238 |
+
+Quadratic, and paid **per record**: a GenBank record whose comment's first line
+is 68 characters — an ordinary sentence — spends ~12 µs failing to find a
+structure it does not have, and the record that has no comment at all pays
+nothing, which is exactly the 16.4 µs between `genbank-1kb-bare` and
+`genbank-1kb-annot`.  EMBL's `CC` path has no such probe, and pays 3.2 µs.
+
+This is a target with an unusual property: it is a cost the reference pays for a
+feature almost no record uses, and a reader that parses the comment without
+probing for a structure pays for neither.  It also fixes the shape of what a
+kernel must reproduce — the comment **text**, with the line breaks the writer
+chose, and not the search that decides it is not a table.
+
+### What the reference actually produces, per format
+
+The two formats disagree about the dict, and the kernel is held to both.  On the
+corpus rows, field for field:
+
+| | GenBank | EMBL |
+|---|---|---|
+| `date` | `'01-JAN-2026'` | **absent** |
+| `source` | `''` | **absent** |
+| `keywords`, thin header | `['']` | **absent** |
+| `keywords`, annotated | `['synthetic', 'benchmark']` | same |
+| `accessions` | `[record.id]` | `[record.id]` |
+| `taxonomy`, thin header | `[]` | `[]` |
+| `organism` | `'synthetic construct'` | same |
+| `molecule_type`, `topology`, `data_file_division` | `'DNA'`, `'linear'`, `'PLN'` | same |
+| `Reference.comment` | `'primary'` | `''` |
+
+So EMBL's thin header carries six keys and GenBank's nine, the missing three are
+`date`, `source` and `keywords`, and the same input text that gives GenBank
+`Reference(comment='primary')` gives EMBL `Reference(comment='')`.  The comment
+itself comes back wrapped at each format's own width, so the kernel reproduces
+the writer's `\n` positions rather than re-wrapping the text.
+
+**What is not in scope here**, stated before the kernel rather than after it:
+the `date` field is `annotations["date"]` as the header wrote it and not
+`record.annotations["date"]` re-derived from `SeqRecord`; `structured_comment`
+is a separate key the reference fills only for records that have one (none of
+the corpus does, and it is the probe above that costs the money, not the dict);
+and `source` for EMBL is absent rather than empty because the reference never
+sets it there.
+
+The target the annotations reader is held to is therefore, per record: **31.9 µs**
+of GenBank header and **17.9 µs** of EMBL header, of which the comment's 16.4 µs
+is a regex that finds nothing in nearly every file.
+
+## Delivered result: the annotations dict — GenBank and EMBL (M22, 2026-10-03)
+
+M21's scope statement named the annotations dict as what it does not produce,
+and the measurement above named the price: **31.9 µs** of GenBank header and
+**17.9 µs** of EMBL header per record, most of the GenBank figure being a
+structured-comment regex that finds nothing.  This is the reader built against
+that target.
+
+```sh
+.venv/bin/python bench/bench_annotations.py --repeat 9
+```
+
+The kernel is [`src/core/annotations.{hpp,cpp}`](../src/core/annotations.hpp),
+reached from Python as `biofasting.read_annotations()`, with
+`biofasting.to_reference()` for callers who want Biopython's
+`Bio.SeqFeature.Reference`.  Corpus: the two bare/annotated pairs the target was
+measured on — `genbank-1kb-bare`/`genbank-1kb-annot` and
+`embl-1kb-bare`/`embl-1kb-annot`, 1,200 records and 8.2 MB, each pair drawing
+its residues from the same seed and its blocks from the same text, so the header
+is the only difference.
+
+**The gate is over the dict, keys and order included.**  Every record's
+annotations — the reference's and ours — is reduced to its key list *in
+insertion order* and to plain values, references through `to_reference` so that
+both sides are the reference's own objects, and the whole file is hashed:
+`dict.__eq__` is order-blind and would pass a reader that emitted a fixed key
+list, which is exactly what this kernel exists not to do.  `ours+interop` is
+hashed against the same rows, which is what makes it the same work plus the
+object.  The one place the reduction has to be spelled carefully is a reference:
+its `location` holds `SimpleLocation` objects on one side and `(start, end)`
+pairs on the other, so both are reduced to `(start, end, strand)` with our own
+pairs given the reference's `None` strand — a difference in the answer must not
+hide behind a difference in how the answer is written.
+
+| corpus | records | keys | ref µs/rec | ours | ref/ours | ours+interop | gate |
+|---|---:|---:|---:|---:|---:|---:|:--:|
+| `genbank-1kb-bare` | 300 | 9 | 25.25 | **4.48** | 5.64× | 4.72 | OK |
+| `genbank-1kb-annot` | 300 | 11 | 58.19 | **9.09** | 6.40× | 11.40 | OK |
+| `embl-1kb-bare` | 300 | 6 | 24.72 | **4.13** | 5.99× | 4.32 | OK |
+| `embl-1kb-annot` | 300 | 9 | 41.76 | **9.50** | 4.40× | 11.43 | OK |
+
+Median of nine passes after one warm-up, all three implementations timed in the
+same harness on the same file.  `ref` is `SeqIO.parse` over the whole record —
+sequences, header, references — so `ref/ours` is a ratio against a reference
+doing strictly more work and is not the number to quote.  The timed unit is the
+parse alone on both sides: the reduction that the gate compares is run
+afterwards, because it costs more on the annotated row than on the bare one
+(eleven keys and three `Reference` objects against nine and none) and a timing
+that included it would put that difference inside the delta.
+
+**The number to quote is the marginal one**, because it is the measurement the
+target was made with, re-derived here rather than trusted:
+
+| | GenBank | EMBL |
+|---|---:|---:|
+| reference, measured now | 32.94 µs | 17.03 µs |
+| recorded target | 31.95 | 17.89 |
+| **ours** — the reading | **4.61 µs** | **5.37 µs** |
+| ours + `to_reference` | 6.69 µs | 7.12 µs |
+
+Run three times at nine passes: GenBank reference 32.94/31.20/31.14, ours
+4.61/4.54/5.07, interop 6.69/6.45/6.56; EMBL reference
+17.03/17.60/18.76, ours 5.37/5.36/5.52, interop 7.12/6.87/6.96.  The shape
+reproduces and the target lands: GenBank 31.1–32.9 against a recorded
+31.39–31.95, EMBL 17.0–18.8 against a recorded 17.50–18.07.  So the header costs
+the reference what M22 said it costs, and this reader produces it in **4.6 µs**
+on GenBank and **5.4 µs** on EMBL — **6.9×** and **3.3×** on the two formats
+respectively.  The GenBank figure is the larger win because the larger part of
+the reference's column is the quadratic probe the kernel never runs: it reads
+the comment text and does not search it for a structure.
+
+`to_reference` adds **2.1 µs** (GenBank) and **1.8 µs** (EMBL) — the cost of
+building Biopython's `Reference` objects for three references, which is the
+object half of the story and not this milestone's work.
+
+**What the kernel decides and what Python decides.**  The kernel walks the
+header's lines, so it alone knows which lines were there and in what order, and
+it hands back the keys it created *in the order it created them*; Python names
+them and builds the dict.  That division is not decoration: the reference
+inserts a key when the line stating it is consumed, so a `COMMENT` above the
+first `REFERENCE` puts `comment` before `references` and one below puts it
+after, and both are asserted in `tests/test_annotations.py`.  Membership in the
+order is also what says a key *exists* — GenBank's thin header has nine keys and
+EMBL's six, and the missing three are `date`, `source` and `keywords`, because
+EMBL's scanner reads no `DT` line, has no `SOURCE` consumer, and creates
+`keywords` only when a `KW` line was there.
+
+**Scope, stated rather than discovered.**  The reader reproduces the header keys
+the two INSDC formats share, for the corpus and for the shapes the tests splice
+in.  SwissProt's header is `Bio.SwissProt`, a different reader with different
+keys, and is not reproduced — a SwissProt record's annotations refuse.  A header
+line that sets a key this reader does not produce — `NID`, `PID`, `DBSOURCE`,
+`SEGMENT`, a structured comment, a GenBank `LOCUS` line in the pre-229.0 layout
+— makes the *record's* annotations refuse and name the shape, rather than return
+a dict that is missing a key the reference would have set; the same contract the
+features table has, and for the same reason.  `gi` **is** reproduced, because
+the files in circulation carry it and a reader that refused them would refuse
+most of what `SeqIO.parse` is pointed at.  Refusals are per record and not per
+file: the sequence and the other records stay usable, which
+`tests/test_annotations.py` asserts alongside the refusal itself.
+
+## Phase 2 ranking, seventh pass: the writers (PLAN 2.4, 2026-10-03)
+
+The sixth pass re-asked the triage's question for the *readers* of the remaining
+`SeqIO` formats and the answer was no: the reference is 4.5×–11× above the floor
+C cannot cross.  The one direction it left untouched is the other one, and a
+prefill is not a decision for `write` any more than it was for `parse`.  So this
+pass asks it: `bench/rank_writers.py`, over the same corpus, three floors deep.
+
+* **reference** — `SeqIO.write`, which is what a caller would otherwise use.
+* **rewrite** — the identical bytes from the smallest pure-Python writer that
+  can produce them, with the per-character loops replaced by a C-level call
+  where one exists: `bytes.translate` for the FASTQ quality string, `str.join`
+  for the FASTA and QUAL wraps, one `write` for the whole file instead of one
+  per line.  Verified byte-for-byte against the reference **before** any time is
+  quoted, so it is a floor under the same output and not a different program.
+* **payload** — the raw sequence and quality bytes with no formatting above
+  them: what a kernel must at least pay.
+
+| row | format | records | reference µs/rec | rewrite | payload | writes/rec |
+|---|---|---:|---:|---:|---:|---:|
+| `fasta-1kb` | fasta | 3,000 | **2.18** | 2.00 (1.09×) | 0.42 | 18.0 |
+| `fastq-150bp` | fastq | 10,000 | **5.26** | 1.09 (**4.81×**) | 0.60 | 1.0 |
+| `qual-150bp` | qual | 10,000 | **15.40** | 8.82 (1.75×) | 0.65 | 9.0 |
+
+Two of the three say something a summary would not.  **FASTQ writing is 4.8×
+reachable without C at all**: the reference walks the quality list one base at a
+time through a dict (`_phred_to_sanger_quality_str[qp]`), and
+`bytes(qualities).translate(table)` is the same mapping in one C call.  **FASTA
+writing has no Python-reachable headroom** — a byte-identical pure-Python writer
+is *slower* than the reference (2.00 against 2.18), so the reference is already
+at the floor Python can reach; what is left is its eighteen `write` calls per
+record and the slice objects behind them, which only a buffer-building kernel
+removes, and the 0.42 µs payload is what such a kernel is bounded by.  **QUAL is
+the worst writer in the family in absolute terms**: 15.4 µs for 150 bases, 103 ns
+a base, because every quality is formatted with `"%i" % round(q, 0)` and the
+lines are packed by popping from the front of a list — O(n) a pop, O(n²) a
+record — and the payload is 0.65.
+
+### The flat-file writers, attributed
+
+A byte-identical GenBank record is a page of column rules, so there is no
+hand-written twin here; the reference's own methods are timed instead against a
+handle that discards.  Times are µs per record.
+
+| | `genbank-1kb` | `genbank-1kb-annot` | `embl-1kb` | `embl-1kb-annot` |
+|---|---:|---:|---:|---:|
+| `write_record` | **29.00** | 27.83 | **37.70** | 36.94 |
+| `_write_the_first_line(s)` | 2.61 | 2.51 | 1.31 | 1.24 |
+| `_write_references` | – | 5.92 | – | 4.03 |
+| `_write_comment` | – | 1.31 | – | 1.03 |
+| `_write_sequence` | **12.61** | 12.89 | **26.88** | 26.75 |
+| rest (DEFINITION→SOURCE, keywords, ID) | 13.78 | 5.20 | 9.51 | 3.53 |
+| `write` calls/record | **148.7** | 166.0 | **169.6** | 191.0 |
+
+A method with nothing to write on a row is `–`, which is why the bare and the
+annotated row are both here: `_write_references` raises `KeyError: 'references'`
+and `_write_comment` raises `IndexError` on a record carrying neither, so a
+table over the bare rows alone would have said the header is cheap.  The residue
+block is the largest single item on both formats and the reason is the write
+count: GenBank emits `ORIGIN` **ten bases at a time** (`f" {data[words:words+10]}"`,
+170 writes a record) and EMBL six blocks a line, so the 12.6 and 26.9 µs are
+almost entirely interpreter crossings rather than formatting.
+
+**Verdict.**  `FastqPhredWriter`, `QualPhredWriter` and the FASTA writer are
+`perf`, and measured rather than assumed for the first time.  The flat-file
+writers are `perf` too, on a target that is larger than any of them — but a
+complete GenBank record means *writing* the annotations dict and the FEATURES
+table, which M21 and M22 only read, so that one is recorded here and deferred
+rather than started.  What this pass delivers is the sequence-only half:
+`write_fasta`, `write_fastq` and `write_qual`, against the floors above.
+
+**Targets the kernels are held to.**  FASTQ ≤ 1.0 µs/record (a 5× over the
+reference and at the measured pure-Python floor, with the quality encoding in
+C), FASTA ≤ 1.0 µs/record on a 1 kb record (a 2.2× against a reference no
+Python rewrite beats), QUAL ≤ 2.0 µs/record (a 7.7× against a reference whose
+per-base cost is a Python format call).  The payload column is the bound no
+kernel may claim to have gone below.
+
+## Delivered result: the writers (M23, 2026-10-03)
+
+The targets above, answered on the same corpus by the same harness —
+`bench/bench_writers.py`, which gates the whole file against `SeqIO.write`
+before it quotes anything.  Every row is the writer alone: the records are
+converted once, outside the timer, and the reference column is `SeqIO.write`
+over the equivalent `SeqRecord` objects.
+
+| row | records | reference µs/rec | ours | ratio | +interop | payload | target | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `fasta-1kb` | 3,000 | 2.12 | **0.46** | 4.6× | 1.09 | 0.12 | 1.0 | PASS |
+| `fastq-150bp` | 10,000 | 5.23 | **0.43** | 12.1× | 2.53 | 0.15 | 1.0 | PASS |
+| `qual-150bp` | 10,000 | 15.22 | **0.93** | 16.4× | 2.95 | 0.15 | 2.0 | PASS |
+
+The quality encoder on its own — `phred_to_sanger` against
+`_get_sanger_quality_str`, both starting from `letter_annotations` so the row is
+the encoding and nothing else — is **0.48 µs** a record against **4.51**, a
+**9.3×**.  That is the 4.81× the ranking pass found reachable with
+`bytes.translate`, so the kernel beats the pure-Python floor rather than
+matching it, which is what it was written for.
+
+Three columns need a word each.  `+interop` is the same output reached through
+`from_seqrecord`, and it is **above** the writer by 2.4×–6× because that
+conversion is per-record Python: a title rule, `str(record.seq).encode` and,
+for FASTQ, the quality encoding.  It is reported rather than folded in because
+it is the path a caller holding `SeqRecord` objects actually takes, and a table
+that showed only the pair path would be describing an API nobody calls.  It is
+still below the reference on every row.  `payload` is re-measured here and is
+lower than the ranking pass's column (0.42/0.60) because that one converted from
+`SeqRecord` objects while this one copies the bytes we already hold — the
+number is a floor under *this* harness, which is why it is measured in it rather
+than quoted.  And `ours` for QUAL is above `ours` for FASTQ despite writing less
+text, because the scores must be rendered as decimal: the kernel does that one
+digit at a time into the buffer, which is the cost the reference pays a Python
+format call for.
+
+**What the kernels reproduce rather than tidy.**  A wrapped FASTA record with no
+sequence writes nothing after the title (`for i in range(0, 0, 60)` never runs)
+while the unwrapped branch writes a blank line — two outputs from one record,
+and both are produced.  A QUAL width of one to five takes the reference's
+`pop(0)` "safe wrapping" branch, which the kernel does not have, so it is
+reproduced in Python rather than approximated; six and up is the kernel's
+`rfind` cut.  Where that cut would find no space in a window — the place
+Biopython 1.88 writes the same string forever — the kernel raises instead, and
+the tests assert the *property* that makes it unreachable (a score is at most
+three digits and every token but the first is preceded by a space, while the
+kernel only sees widths of six and up) rather than pretending to exercise it.
+A score above PHRED 93 is truncated to `~` **and warned about**, so a caller who
+would see the reference raise under warnings-as-errors sees this raise too.
+
+**Still open.**  The flat-file writers (`GenBankWriter`, `EmblWriter`) are
+`parity`, measured and deferred: a byte-identical record means writing the
+annotations dict and the FEATURES table, which M21 and M22 only read.  Their
+attribution above — 29.0 and 37.7 µs a record, 148.7 and 169.6 `write` calls —
+is the target when that work starts, and nothing in it has been delivered.

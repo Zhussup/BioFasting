@@ -3,9 +3,10 @@
 // does not mean editing the place where the ABI is defined.
 
 #include <cstddef>
-#include <string>
-
 #include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include <nanobind/nanobind.h>
 #include <nanobind/ndarray.h>
@@ -14,14 +15,19 @@
 #include <nanobind/stl/vector.h>
 
 #include "biofasting/build_config.hpp"
+#include "annotations.hpp"
 #include "build_info.hpp"
 #include "cpu_features.hpp"
 #include "fasta.hpp"
 #include "fastq.hpp"
+#include "feature.hpp"
+#include "flatfile.hpp"
 #include "inflate.hpp"
+#include "location.hpp"
 #include "protparam.hpp"
 #include "seqops.hpp"
 #include "sequtils.hpp"
+#include "write.hpp"
 
 namespace nb = nanobind;
 
@@ -263,8 +269,320 @@ class PyFastaIndex {
   biofasting::FastaIndex index_;
 };
 
-// The Python face of FastqIndex.  Same buffer-lifetime rule as FastaIndex --
-// and here it is load-bearing twice over, because the index does not merely
+// The canonical tuple spellings of the location kernel's structures.  Kept as
+// plain tuples rather than as bound classes because the Python layer already
+// has value types for them (biofasting.seqfeature): a second set of classes
+// here would be a second spelling of the same thing, free to drift from the
+// first, and the conversion to `Bio.SeqFeature` objects would then have two
+// inputs to disagree about.
+//
+//   position := (kind: int, value: int, left: int, right: int,
+//                choices: tuple[int, ...])
+//   part     := (start: position, end: position, strand: int, ref: str)
+//   location := (operator: str, parts: tuple[part, ...])
+//
+// `kind` indexes biofasting.seqfeature.POSITION_KINDS and `strand` is -1, +1 or
+// 0 for the reference's `None`: a location on a protein has no strand at all,
+// which is a different statement from "stranded, strand unknown".
+nb::tuple position_tuple(const biofasting::Position& position) {
+  nb::list choices;
+  for (const std::int64_t choice : position.choices) choices.append(choice);
+  return nb::make_tuple(
+      static_cast<int>(position.kind), position.value, position.left,
+      position.right, nb::steal<nb::tuple>(PyList_AsTuple(choices.ptr())));
+}
+
+nb::tuple part_tuple(const biofasting::LocationPart& part) {
+  return nb::make_tuple(position_tuple(part.start), position_tuple(part.end),
+                        static_cast<int>(part.strand),
+                        nb::str(part.ref.c_str(), part.ref.size()));
+}
+
+const char* location_op_name(biofasting::LocationOp op) noexcept {
+  switch (op) {
+    case biofasting::LocationOp::simple: return "simple";
+    case biofasting::LocationOp::join: return "join";
+    case biofasting::LocationOp::order: return "order";
+    case biofasting::LocationOp::bond: return "bond";
+  }
+  return "simple";
+}
+
+nb::tuple location_tuple(const biofasting::Location& location) {
+  nb::list parts;
+  for (const biofasting::LocationPart& part : location.parts) {
+    parts.append(part_tuple(part));
+  }
+  return nb::make_tuple(nb::str(location_op_name(location.op)),
+                        nb::steal<nb::tuple>(PyList_AsTuple(parts.ptr())));
+}
+
+const char* location_status_name(biofasting::LocationStatus status) noexcept {
+  switch (status) {
+    case biofasting::LocationStatus::ok: return "ok";
+    case biofasting::LocationStatus::parser_error: return "parser_error";
+    case biofasting::LocationStatus::refused: return "refused";
+  }
+  return "refused";
+}
+
+const char* location_warning_name(biofasting::LocationWarningKind kind) noexcept {
+  switch (kind) {
+    case biofasting::LocationWarningKind::origin_wrap: return "origin_wrap";
+    case biofasting::LocationWarningKind::bond: return "bond";
+  }
+  return "bond";
+}
+
+// The warnings a parse would have raised, in the order the reference would have
+// raised them: a list of `(kind, text)` and not a pair of flags, because
+// `join(30..5,60..2)` on a circular record warns twice and
+// `join(bond(1),30..5)` warns in that order.  `text` is the part's own text for
+// a wrap -- which is what the reference quotes -- and empty for a bond, whose
+// wording quotes nothing.  The Python layer says the words.
+nb::list location_warnings(const std::vector<biofasting::LocationWarning>& warnings) {
+  nb::list out;
+  for (const biofasting::LocationWarning& warning : warnings) {
+    out.append(nb::make_tuple(nb::str(location_warning_name(warning.kind)),
+                              nb::str(warning.text.c_str(), warning.text.size())));
+  }
+  return out;
+}
+
+// A feature's qualifiers as `(key, value, has_value, escape_warning,
+// escape_text)`.  The last two are the reference's NCBI escaping warning: the
+// flag, and the value the warning is about -- which is the value as it stood
+// before the doubled quotes were undone, not the value kept.  The Python layer
+// decides whether to say the words; the kernel is what noticed.
+nb::list feature_qualifiers(const biofasting::Feature& feature) {
+  nb::list out;
+  for (const biofasting::FeatureQualifier& qualifier : feature.qualifiers) {
+    out.append(nb::make_tuple(
+        nb::str(qualifier.key.c_str(), qualifier.key.size()),
+        nb::str(qualifier.value.c_str(), qualifier.value.size()),
+        qualifier.has_value, qualifier.escape_warning,
+        nb::str(qualifier.escape_text.c_str(), qualifier.escape_text.size())));
+  }
+  return out;
+}
+
+// The format name as `SeqIO.parse` spells it, resolved once at construction so
+// that a typo is an error at the call and not a record read as the wrong shape.
+biofasting::FlatFileFormat flatfile_format(const std::string& name) {
+  if (name == "genbank") return biofasting::FlatFileFormat::genbank;
+  if (name == "embl") return biofasting::FlatFileFormat::embl;
+  if (name == "swiss") return biofasting::FlatFileFormat::swiss;
+  throw nb::value_error(("unknown flat-file format '" + name +
+                         "': expected 'genbank', 'embl' or 'swiss'")
+                            .c_str());
+}
+
+// The Python face of FlatFileIndex.  Same buffer-lifetime rule as FastaIndex:
+// the index points into the caller's buffer, so the reference is declared first
+// and held for as long as the index lives.
+//
+// Note what is *not* here: no SeqRecord and no annotations dict.  What this
+// exposes is the three fields the sixth ranking pass measured as the part of a
+// flat-file parse that is neither data movement nor object construction, plus
+// the FEATURES table read on demand, and the interop shim is what turns them
+// into a record.
+class PyFlatFileIndex {
+ public:
+  PyFlatFileIndex(nb::handle source, const std::string& format)
+      : buffer_(source),
+        index_(buffer_.data(), buffer_.size(), flatfile_format(format)) {
+    if (index_.failed()) throw nb::value_error(index_.error_message().c_str());
+  }
+
+  std::size_t size() const noexcept { return index_.size(); }
+
+  // The format the index was built as, by the name `SeqIO.parse` uses.  Not an
+  // internal detail: the two flat-file formats carry different key sets in
+  // their annotations dict -- EMBL has no `date`, no `source`, and no `keywords`
+  // unless a `KW` line was there -- and the layer that decides the naming is one
+  // level up, so it has to be able to ask which format it is naming for rather
+  // than carry a second copy of the answer.
+  std::string format() const {
+    return biofasting::flatfile_format_name(index_.format());
+  }
+
+  bool has(const std::string& id) const { return index_.find(id) != nullptr; }
+
+  std::string name(const std::string& id) const { return require(id).name; }
+
+  std::string description(const std::string& id) const {
+    return require(id).description;
+  }
+
+  std::size_t sequence_length(const std::string& id) const {
+    return require(id).length;
+  }
+
+  nb::bytes get(const std::string& id) const {
+    const std::string sequence = index_.sequence(require(id));
+    return nb::bytes(sequence.data(), sequence.size());
+  }
+
+  nb::bytes slice(const std::string& id, std::size_t start,
+                  std::size_t end) const {
+    const std::string window = index_.sequence_slice(require(id), start, end);
+    return nb::bytes(window.data(), window.size());
+  }
+
+  nb::list keys() const {
+    nb::list ids;
+    for (const biofasting::FlatFileRecord& record : index_.records()) {
+      ids.append(nb::str(record.id.c_str(), record.id.size()));
+    }
+    return ids;
+  }
+
+  // The whole file in one call, in file order: (id, name, description,
+  // sequence).  This is what a stream parse wants -- a caller that iterates
+  // every record should not pay a lookup per record for an order it already
+  // knows, and the C++ side can build the list without a Python call per field.
+  nb::list records() const {
+    nb::list out;
+    for (const biofasting::FlatFileRecord& record : index_.records()) {
+      const std::string sequence = index_.sequence(record);
+      out.append(nb::make_tuple(
+          nb::str(record.id.c_str(), record.id.size()),
+          nb::str(record.name.c_str(), record.name.size()),
+          nb::str(record.description.c_str(), record.description.size()),
+          nb::bytes(sequence.data(), sequence.size())));
+    }
+    return out;
+  }
+
+  // Where a record's parts are, in the file's own terms.  Not an internal
+  // detail: it is what says whether a reader is walking the bytes once or
+  // re-parsing them, and a test asserting it is what stops the single-pass
+  // property from quietly disappearing.
+  nb::tuple location(const std::string& id) const {
+    const biofasting::FlatFileRecord& record = require(id);
+    return nb::make_tuple(record.offset, record.sequence_offset,
+                          record.sequence_end, record.length);
+  }
+
+  nb::list offsets() const {
+    nb::list out;
+    for (const biofasting::FlatFileRecord& record : index_.records()) {
+      out.append(record.offset);
+    }
+    return out;
+  }
+
+  // `(ok, message, features)`.  Each feature is `(type, location|None, status,
+  // message, warnings, qualifiers)`, with the location as
+  // `_core.parse_location` returns one -- `None` when the reference's parser
+  // rejected the string, which is a behaviour its consumer turns into a missing
+  // location and a warning -- and the warnings in the reference's own order.
+  //
+  // The first element is False when this reader declined the table: the record's
+  // header is not in a layout it reproduces, or a line is shaped the way the
+  // reference only warns about.  A record with no feature block at all is
+  // `ok` with an empty list, which is an answer and not a refusal.
+  nb::tuple features(const std::string& id) const {
+    const biofasting::FeatureTable table = index_.features(require(id));
+    nb::list features;
+    for (const biofasting::Feature& feature : table.features) {
+      nb::object location = nb::none();
+      if (feature.location.status == biofasting::LocationStatus::ok) {
+        location = location_tuple(feature.location.location);
+      }
+      features.append(nb::make_tuple(
+          nb::str(feature.type.c_str(), feature.type.size()), location,
+          nb::str(location_status_name(feature.location.status)),
+          nb::str(feature.location.message.c_str(),
+                  feature.location.message.size()),
+          location_warnings(feature.location.warnings),
+          feature_qualifiers(feature)));
+    }
+    return nb::make_tuple(!table.refused,
+                          nb::str(table.message.c_str(), table.message.size()),
+                          features);
+  }
+
+  // `(ok, message, keys, table)` for the record's header.
+  //
+  // `keys` is the list of annotation keys the header *created*, in the order it
+  // created them, and it is not a formality: the reference inserts each key when
+  // the line stating it is consumed, so a `COMMENT` above the first `REFERENCE`
+  // puts `comment` before `references`, and a dict compares and prints by that
+  // order.  It is also what says a key exists at all -- `data_file_division` is
+  // created for every EMBL ID line even if the field is blank, where GenBank's
+  // `molecule_type` is skipped when its column is empty -- so the table carries
+  // values and `keys` carries the set, and an empty string in the table means
+  // what the reference means by it.
+  //
+  // The values are the reading, not the naming; the Python layer builds the dict
+  // and is where the per-format differences are stated.  The references come back
+  // as tuples of the eight fields the reference's `Reference` holds, with the
+  // location already in Python coordinates -- `(start - 1, end)`, which is the
+  // one piece of arithmetic in the block and is done once, here.
+  nb::tuple annotations(const std::string& id) const {
+    const biofasting::AnnotationTable table =
+        index_.annotations(require(id));
+    nb::list keys;
+    for (const biofasting::AnnotationKey key : table.order) {
+      keys.append(nb::str(biofasting::annotation_key_name(key)));
+    }
+    nb::dict out;
+    out["molecule_type"] = nb::cast(table.molecule_type);
+    out["topology"] = nb::cast(table.topology);
+    out["data_file_division"] = nb::cast(table.data_file_division);
+    out["date"] = nb::cast(table.date);
+    out["accessions"] = strings(table.accessions);
+    out["keywords"] = strings(table.keywords);
+    out["taxonomy"] = strings(table.taxonomy);
+    out["source"] = nb::cast(table.source);
+    out["organism"] = nb::cast(table.organism);
+    out["comment"] = nb::cast(table.comment);
+    out["sequence_version"] = nb::cast(table.sequence_version);
+    out["gi"] = nb::cast(table.gi);
+    nb::list references;
+    for (const biofasting::AnnotationReference& reference : table.references) {
+      nb::list location;
+      for (const std::pair<std::int64_t, std::int64_t>& part : reference.location) {
+        location.append(nb::make_tuple(part.first, part.second));
+      }
+      references.append(nb::make_tuple(
+          nb::str(reference.title.c_str(), reference.title.size()),
+          nb::str(reference.authors.c_str(), reference.authors.size()),
+          nb::str(reference.consrtm.c_str(), reference.consrtm.size()),
+          nb::str(reference.journal.c_str(), reference.journal.size()),
+          nb::str(reference.pubmed_id.c_str(), reference.pubmed_id.size()),
+          nb::str(reference.medline_id.c_str(), reference.medline_id.size()),
+          nb::str(reference.comment.c_str(), reference.comment.size()),
+          location));
+    }
+    out["references"] = references;
+    return nb::make_tuple(!table.failed,
+                          nb::str(table.error_message.c_str(),
+                                  table.error_message.size()),
+                          keys, out);
+  }
+
+ private:
+  static nb::list strings(const std::vector<std::string>& values) {
+    nb::list out;
+    for (const std::string& value : values) {
+      out.append(nb::str(value.c_str(), value.size()));
+    }
+    return out;
+  }
+
+  const biofasting::FlatFileRecord& require(const std::string& id) const {
+    const biofasting::FlatFileRecord* record = index_.find(id);
+    if (record == nullptr) throw nb::key_error(id.c_str());
+    return *record;
+  }
+
+  BufferRef buffer_;
+  biofasting::FlatFileIndex index_;
+};
+
+// The Python face of FastqIndex.  Same buffer-lifetime rule as FastaIndex --// and here it is load-bearing twice over, because the index does not merely
 // point into the buffer: it *keys* itself on views of the buffer's bytes, so a
 // buffer that moved would take every key in the map with it.
 class PyFastqIndex {
@@ -384,6 +702,45 @@ class PyFastqIndex {
   biofasting::GzipBuffer inflated_;
   biofasting::FastqIndex index_;
 };
+
+// One field of one record row, borrowed rather than copied.  The rows are
+// tuples of `bytes` -- the shape every reader in this package produces -- and a
+// `str` here is a caller error rather than something to encode, because only
+// the caller knows which encoding produced its text.
+std::string_view tuple_bytes(const nb::tuple& row, Py_ssize_t index,
+                             const char* what) {
+  if (index >= static_cast<Py_ssize_t>(row.size())) {
+    throw nb::value_error("each record must be a tuple of bytes");
+  }
+  PyObject* cell = PyTuple_GET_ITEM(row.ptr(), index);
+  if (!PyBytes_Check(cell)) throw nb::type_error(what);
+  return std::string_view(PyBytes_AS_STRING(cell),
+                          static_cast<std::size_t>(PyBytes_GET_SIZE(cell)));
+}
+
+// Walk any Python iterable of record tuples and build one format's whole output
+// in a single buffer.
+//
+// The iteration is the Python C API's and not a conversion to `std::vector` on
+// purpose: a vector would copy every title, sequence and quality into a C++
+// string before the first byte of output, and a caller writing a million reads
+// would pay for a second copy of all of them.  Each row is borrowed for the
+// length of one record and appended straight into the result, so the memory the
+// writer needs is the file it is writing and nothing else.
+template <typename Emit>
+nb::bytes write_all(nb::handle records, Emit emit) {
+  std::string out;
+  PyObject* iterator = PyObject_GetIter(records.ptr());
+  if (iterator == nullptr) throw nb::python_error();
+  PyObject* item = nullptr;
+  while ((item = PyIter_Next(iterator)) != nullptr) {
+    const nb::object holder = nb::steal(item);
+    emit(out, nb::cast<nb::tuple>(holder));
+  }
+  Py_DECREF(iterator);
+  if (PyErr_Occurred()) throw nb::python_error();
+  return nb::bytes(out.data(), out.size());
+}
 
 }  // namespace
 
@@ -522,6 +879,178 @@ NB_MODULE(_core, m) {
           "difference is visible rather than assumed.  The array holds the "
           "index alive, and so the mapping with it.\n"
           "Raises ValueError if the record's lines are not a regular grid.");
+
+  nb::class_<PyFlatFileIndex>(
+      m, "FlatFileIndex",
+      "Indexes the records of a GenBank, EMBL or SwissProt file held in any "
+      "object exposing the buffer protocol.\n\n"
+      "Keys are record ids in file order, with a duplicate refused, so a fetch "
+      "is a copy of the record's bytes rather than a re-parse.\n\n"
+      "What it reproduces is `id`, `name`, `description`, the sequence, the "
+      "FEATURES table and the header values the annotations dict is built from "
+      "-- the parts the flat-file measurement says are the reference's own logic "
+      "rather than its data movement or its object building.  What it does not "
+      "reproduce is `SeqRecord.dbxrefs` or the record's `Seq` object, so it is "
+      "not a drop-in for Bio.SeqIO.parse and must not be presented as one.\n\n"
+      "It is also stricter than the reference on purpose.  Biopython meets a "
+      "malformed sequence line by warning and guessing -- a wrongly indented "
+      "GenBank line is shifted by one byte and parsed anyway -- and a guess "
+      "reproduced differently is a sequence that looks right and is not.  This "
+      "reader refuses such a file with the byte offset that made it refuse, and "
+      "the caller falls back to Bio.SeqIO.parse.\n"
+      "Use biofasting.genbank.open_genbank() rather than building this "
+      "directly: it is the piece that keeps the buffer alive.")
+      .def(nb::init<nb::handle, const std::string&>(), "source"_a, "format"_a,
+           "Index `source`, which must expose the buffer protocol, as one of "
+           "'genbank', 'embl' or 'swiss'.  Raises ValueError for an unknown "
+           "format, for a duplicate record id, or for a file this reader "
+           "declines to guess at.")
+      .def("__len__", &PyFlatFileIndex::size, "Number of records.")
+      .def("format", &PyFlatFileIndex::format,
+           "The format this index was built as: 'genbank', 'embl' or 'swiss'.")
+      .def("__contains__", &PyFlatFileIndex::has, "id"_a,
+           "Whether a record with this id exists.")
+      .def("__getitem__", &PyFlatFileIndex::get, "id"_a,
+           "The record's sequence, as bytes.  Raises KeyError if there is no "
+           "such record.")
+      .def("__iter__",
+           [](const PyFlatFileIndex& self) { return nb::iter(self.keys()); },
+           "Iterate the record ids, in file order.")
+      .def("keys", &PyFlatFileIndex::keys,
+           "The record ids, in file order, as a list.")
+      .def("name", &PyFlatFileIndex::name, "id"_a,
+           "The record's name: the LOCUS name for GenBank, the ID line's first "
+           "field for EMBL and SwissProt.")
+      .def("description", &PyFlatFileIndex::description, "id"_a,
+           "The record's description: DEFINITION or DE, joined and, for "
+           "GenBank, without its trailing full stop.")
+      .def("sequence_length", &PyFlatFileIndex::sequence_length, "id"_a,
+           "The sequence length, counted during the scan rather than measured "
+           "from the bytes handed back.")
+      .def("sequence_slice", &PyFlatFileIndex::slice, "id"_a, "start"_a, "end"_a,
+           "The [start, end) window of the sequence.  Both bounds are clamped "
+           "to the record.")
+      .def("records", &PyFlatFileIndex::records,
+           "Every record in file order, as (id, name, description, sequence).\n\n"
+           "This is what a stream parse wants: a caller iterating the whole "
+           "file should not pay a lookup per record for an order it already "
+           "knows.")
+      .def("location", &PyFlatFileIndex::location, "id"_a,
+           "Where the record is: (offset, sequence_offset, sequence_end, "
+           "length), as byte offsets into the buffer.")
+      .def("offsets", &PyFlatFileIndex::offsets,
+           "Every record's starting byte offset, in file order.")
+      .def("features", &PyFlatFileIndex::features, "id"_a,
+           "The record's FEATURES table, as (ok, message, features).\n\n"
+           "Each feature is (type, location_or_None, status, message,\n"
+           "warnings, qualifiers), and each qualifier is\n"
+           "(key, value, has_value, escape_warning, escape_text).  `warnings` is\n"
+           "what the reference would have warned about while parsing the\n"
+           "location, as (kind, text) pairs in its own order -- see\n"
+           "parse_location.  `ok` is False\n"
+           "where this reader declined the table -- a shape the reference only\n"
+           "warns about, or a header whose declared size and topology it could\n"
+           "not read -- and `message` then says which line it was.")
+      .def("annotations", &PyFlatFileIndex::annotations, "id"_a,
+           "The record's header, as (ok, message, keys, table).\n\n"
+           "`keys` is the list of annotation keys the header *created*, in the\n"
+           "order it created them: the reference inserts a key when the line\n"
+           "stating it is consumed, so a COMMENT above the first REFERENCE puts\n"
+           "`comment` before `references`, and a dict compares and prints by\n"
+           "that order.  Membership in `keys` is also what says a key exists at\n"
+           "all -- `data_file_division` is created for every EMBL ID line even\n"
+           "when the field is blank, where GenBank's `molecule_type` is skipped\n"
+           "when its column is empty -- so an empty value in `table` means what\n"
+           "the reference means by it rather than standing in for an absence.\n\n"
+           "`table` holds the values the header stated.  `references` is a list\n"
+           "of (title, authors, consrtm, journal, pubmed_id, medline_id,\n"
+           "comment, location) with the location already in Python coordinates.\n"
+           "Which of these become keys of SeqRecord.annotations is decided one\n"
+           "level up, because it differs between GenBank and EMBL.  `ok` is\n"
+           "False where this reader declined the header, and `message` names the\n"
+           "shape it declined.");
+
+  // ---------------------------------------------------------------------
+  // Feature locations
+  // ---------------------------------------------------------------------
+  //
+  // `Location.fromstring` and `Position.fromstring`, as kernels.  They return a
+  // status rather than raising, because the reference's three outcomes are not
+  // three exceptions: it catches `LocationParserError` inside the feature
+  // consumer and turns it into `location = None` plus a warning, so a kernel
+  // that raised for it would erase the difference between "unparseable, and the
+  // reference says so quietly" and "this reader declines to guess".
+  //
+  // `parse_location(text, length, circular, stranded)` returns
+  //
+  //   (status, location_or_None, message, warnings)
+  //
+  // with `status` one of "ok", "parser_error" (the reference raises
+  // LocationParserError) or "refused" (the reference raises something else, or
+  // accepts the string while dropping text from it).  `length` is the record's
+  // declared size and may be None, which is not the same fact as zero.
+  m.def(
+      "parse_location",
+      [](const std::string& text, nb::object length, bool circular,
+         bool stranded) {
+        std::int64_t declared = 0;
+        const bool has_length = !length.is_none();
+        if (has_length) declared = nb::cast<std::int64_t>(length);
+        const biofasting::LocationResult result = biofasting::parse_location(
+            text, declared, has_length, circular, stranded);
+        nb::object location = nb::none();
+        if (result.status == biofasting::LocationStatus::ok) {
+          location = location_tuple(result.location);
+        }
+        return nb::make_tuple(location_status_name(result.status), location,
+                              nb::str(result.message.c_str(),
+                                      result.message.size()),
+                              location_warnings(result.warnings));
+      },
+      "text"_a, "length"_a = nb::none(), "circular"_a = false,
+      "stranded"_a = true,
+      "Read a feature location such as "
+      "\"complement(join(490883..490885,1..879))\" into canonical positions "
+      "and parts.\n\n"
+      "Returns (status, location, message, warnings).  "
+      "A location is not a pair of integers, and this does not flatten it into "
+      "one: `complement` carries a strand, `<`/`>` make an end fuzzy, `(3.9)` "
+      "is a boundary known only to lie between two bases, `one-of(...)` is a "
+      "choice, and `^` is a zero-length junction.\n\n"
+      "The status is \"ok\", \"parser_error\" -- where the reference raises "
+      "LocationParserError, which its feature consumer catches and turns into a "
+      "missing location plus a warning -- or \"refused\", where the reference "
+      "raises something else or silently discards text.  A refusal is a design "
+      "difference and not a bug: it is this reader saying it will not guess.\n\n"
+      "`warnings` is what the reference would have warned about *inside* the "
+      "parse, reported rather than spelled and in its own order: `(kind, text)` "
+      "with kind \"origin_wrap\" (one entry per part repaired as origin "
+      "wrapping, carrying the part's own text, which the reference quotes) or "
+      "\"bond\" (one entry per dropped `bond` part, whose wording is fixed, so "
+      "its text is empty).");
+
+  m.def(
+      "parse_position",
+      [](const std::string& text, int offset) {
+        biofasting::Position position;
+        std::string message;
+        const biofasting::LocationStatus status =
+            biofasting::parse_position(text, offset, position, message);
+        nb::object out = nb::none();
+        if (status == biofasting::LocationStatus::ok) {
+          out = position_tuple(position);
+        }
+        return nb::make_tuple(location_status_name(status), out,
+                              nb::str(message.c_str(), message.size()));
+      },
+      "text"_a, "offset"_a = 0,
+      "Read one end of a location: `Position.fromstring(text, offset)`.\n\n"
+      "`offset` is 0 for an end position and -1 for a start position, which is "
+      "the reference's own convention and not a convenience -- it is what makes "
+      "`(9.10)` mean 9 at the start of a location and 10 at its end.  Anything "
+      "else is refused.\n\n"
+      "Returns (status, position, message) with the same status vocabulary as "
+      "parse_location.");
 
   nb::class_<PyFastqIndex>(m, "FastqIndex",
                            "Indexes the records of a FASTQ file held in any "
@@ -953,4 +1482,99 @@ NB_MODULE(_core, m) {
       "declines: `str.count` is not interested in what it does not find, so a "
       "residue outside the twenty is a zero rather than an error, and `map` says "
       "which bytes those are.");
+
+  // --- the writers ---------------------------------------------------------
+  //
+  // Each takes the whole iterable of records and returns the whole file as one
+  // `bytes`.  Not one call per record: the reference already writes one record
+  // at a time and the cost being removed is the interpreter crossing, so a
+  // kernel reached once per record would pay the crossing back.  The rows are
+  // `(title, sequence)` for FASTA, `(title, sequence, quality)` for FASTQ and
+  // `(title, quality)` for QUAL, in this package's own form -- bytes, the marker
+  // character excluded, and a quality string already phred+33.
+
+  m.def(
+      "write_fasta",
+      [](nb::handle records, std::size_t wrap) {
+        return write_all(records, [wrap](std::string& out, const nb::tuple& row) {
+          biofasting::append_fasta(
+              out, tuple_bytes(row, 0, "a FASTA title must be bytes"),
+              tuple_bytes(row, 1, "a FASTA sequence must be bytes"), wrap);
+        });
+      },
+      "records"_a, "wrap"_a = 60,
+      "The whole FASTA file as one `bytes`, from `(title, sequence)` rows.\n\n"
+      "`title` excludes the `>` and lines are wrapped at `wrap`, which is "
+      "Biopython's default and the width its own writer produces.  A `wrap` of "
+      "0 is not the same program: the reference takes its unwrapped branch "
+      "there and writes a newline even for an empty sequence, where a wrapped "
+      "record of no length writes no base line at all.");
+
+  m.def(
+      "write_fastq",
+      [](nb::handle records) {
+        return write_all(records, [](std::string& out, const nb::tuple& row) {
+          const std::string_view sequence =
+              tuple_bytes(row, 1, "a FASTQ sequence must be bytes");
+          const std::string_view quality =
+              tuple_bytes(row, 2, "a FASTQ quality string must be bytes");
+          if (sequence.size() != quality.size()) {
+            throw nb::value_error(
+                "a FASTQ record's sequence and quality must be the same "
+                "length");
+          }
+          biofasting::append_fastq(
+              out, tuple_bytes(row, 0, "a FASTQ title must be bytes"), sequence,
+              quality);
+        });
+      },
+      "records"_a,
+      "The whole FASTQ file as one `bytes`, from `(title, sequence, quality)` "
+      "rows.\n\n"
+      "Four lines a record and no wrapping, which is what Biopython does and "
+      "what every consumer of the format expects.  The quality string is copied "
+      "rather than decoded: our records already carry phred+33, and a kernel "
+      "that re-encoded it would be undoing work the caller did.");
+
+  m.def(
+      "write_qual",
+      [](nb::handle records, std::size_t wrap) {
+        return write_all(records, [wrap](std::string& out, const nb::tuple& row) {
+          if (!biofasting::append_qual(
+                  out, tuple_bytes(row, 0, "a QUAL title must be bytes"),
+                  tuple_bytes(row, 1, "a QUAL quality string must be bytes"),
+                  wrap)) {
+            throw nb::value_error(
+                "this record's scores cannot be wrapped at this width: the "
+                "reference's own line cut needs a space inside every window, "
+                "and Biopython 1.88 loops forever where there is none");
+          }
+        });
+      },
+      "records"_a, "wrap"_a = 60,
+      "The whole QUAL file as one `bytes`, from `(title, quality)` rows.\n\n"
+      "The scores are decimal, joined by single spaces and cut at the last one "
+      "inside each `wrap`-wide window, which is the reference's "
+      "`data.rfind(' ', 0, wrap)` -- its *fast* wrapping branch, the one "
+      "`SeqIO.write` takes at the default width, and not the `pop(0)` loop its "
+      "`to_string` uses.  A `wrap` of 0 means one line a record.");
+
+  m.def(
+      "phred_to_sanger",
+      [](nb::handle source) {
+        const BufferRef buffer(source);
+        std::string out;
+        biofasting::phred_to_sanger(
+            reinterpret_cast<const unsigned char*>(buffer.data()), buffer.size(),
+            out);
+        return nb::bytes(out.data(), out.size());
+      },
+      "scores"_a,
+      "PHRED scores as the Sanger ASCII string a FASTQ or QUAL record carries.\n\n"
+      "`min(126, score + 33)` a byte, which is the reference's own encoding "
+      "including its truncation at 93: a Sanger FASTQ cannot hold a score above "
+      "93, and the reference warns and truncates rather than wrapping.  This "
+      "exists because the reference does it with a dictionary lookup a base, "
+      "and it is the one place a `SeqRecord`'s `phred_quality` becomes the "
+      "string the writers above take.");
 }
