@@ -432,7 +432,11 @@ EDGE_FASTQ: dict[str, tuple[bytes, str]] = {
         b"ACGTACGTACGT\n"
         b"+\n"
         b"++IIIIIIIIII\n",
+        # Declared, not counted: the '@'s in the first quality line defeat the
+        # line-starting-@ heuristic.  Two records, and a manifest that says
+        # otherwise is a manifest the corpus tests will reject.
         "The classic '@'-in-quality trap; also '+' as a quality character.",
+        2,
     ),
     "edge/empty_read.fastq": (
         b"@empty\n\n+\n\n@nonempty\nACGT\n+\nIIII\n",
@@ -554,14 +558,29 @@ EDGE_FASTA: dict[str, tuple[bytes, str]] = {
 }
 
 
-def write_literal_corpus(sink_factory, entries: dict[str, tuple[bytes, str]], kind: str) -> list[dict]:
+def write_literal_corpus(sink_factory, entries: dict[str, tuple], kind: str) -> list[dict]:
+    """Write hand-written corpus files and record what each one contains.
+
+    An entry is ``(payload, note)`` or ``(payload, note, records)``.  The count
+    is worth giving explicitly wherever it can be, because the fallback is a
+    heuristic that counts line-starting markers and is fooled by exactly the
+    case that makes FASTQ worth testing: a *quality* line may begin with '@',
+    and then the heuristic counts it as a header.
+    `quality_contains_at_and_plus.fastq` has such a line, and the manifest's
+    count for it was wrong by one until this declaration was added -- found by
+    the corpus tests of step 1.5, which cross-check the manifest's counts
+    against two parsers.
+    """
     manifest = []
-    for name, (payload, note) in sorted(entries.items()):
+    for name, entry in sorted(entries.items()):
+        payload, note = entry[0], entry[1]
         sink = sink_factory(name)
         sink.write(payload)
-        records = payload.count(b"\n@") + (1 if payload.startswith(b"@") else 0)
-        if kind == "fasta":
-            records = payload.count(b"\n>") + (1 if payload.startswith(b">") else 0)
+        records = entry[2] if len(entry) > 2 else None
+        if records is None:
+            marker = b"\n>" if kind == "fasta" else b"\n@"
+            lead = b">" if kind == "fasta" else b"@"
+            records = payload.count(marker) + (1 if payload.startswith(lead) else 0)
         manifest.append(sink.close(kind=kind, records=records, notes=note))
     return manifest
 

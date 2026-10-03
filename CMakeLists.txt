@@ -23,7 +23,10 @@
 
 cmake_minimum_required(VERSION 3.15...3.30)
 
-project(biofasting LANGUAGES CXX)
+# C as well as C++: libdeflate is C99 and is compiled by this build (see the
+# libdeflate block below).  The language is enabled unconditionally rather than
+# only when vendoring is on, so there is one configure path and not two.
+project(biofasting LANGUAGES C CXX)
 
 # scikit-build-core injects the PEP 621 version from pyproject.toml.  A plain
 # cmake build has no wheel metadata to read from, so it says so explicitly
@@ -73,7 +76,183 @@ find_package(nanobind CONFIG REQUIRED)
 set(BIOFASTING_CORE_SOURCES
   src/core/module.cpp
   src/core/build_info.cpp
-  src/core/cpu_features.cpp)
+  src/core/cpu_features.cpp
+  src/core/line.cpp
+  src/core/fastq.cpp
+  src/core/fasta.cpp
+  src/core/seqops.cpp
+  src/core/sequtils.cpp
+  src/core/protparam.cpp
+  src/core/inflate.cpp)
+
+# libdeflate: the gz path's decompressor, and the one third-party dependency the
+# core takes.  Chosen over zlib because zlib is part of the baseline being
+# beaten, so matching its inflate would leave the larger half of the gap where
+# it is.
+#
+# It is **vendored**: release 1.23 lives in third_party/libdeflate, put there and
+# kept honest by tools/vendor_libdeflate.py, and this build compiles it into a
+# static PIC archive that travels inside the wheel.  Taking it from the host
+# instead made the wheel's portability a property of the machine that built it:
+# a wheel linked against a shared libdeflate imports only where libdeflate is
+# installed, which is the "works on my laptop" failure this project exists not
+# to ship.  Linking the host's *static* archive is not the way out either --
+# Debian's libdeflate.a is built without -fPIC and fails outright when linked
+# into a shared module, with "relocation R_X86_64_PC32 ... can not be used when
+# making a shared object".  So the choice is between vendoring the source and
+# shipping a wheel that only runs where it was built.
+#
+# Two options, the second of which exists for a distro packager who wants to
+# build against their own libdeflate rather than for anyone benchmarking:
+#
+#   -DBIOFASTING_VENDORED_LIBDEFLATE=OFF   use the host's libdeflate
+#   -DBIOFASTING_LIBDEFLATE_STATIC=ON     ...and link its static archive
+#
+# Whichever way it goes is reported by build_info(), because "which inflate
+# produced this gz number, and does the wheel carry it" is not a detail.
+option(BIOFASTING_VENDORED_LIBDEFLATE
+  "Compile the pinned libdeflate in third_party/ rather than using the host's" ON)
+option(BIOFASTING_LIBDEFLATE_STATIC
+  "With BIOFASTING_VENDORED_LIBDEFLATE=OFF, link the host's static archive" OFF)
+
+if(BIOFASTING_VENDORED_LIBDEFLATE)
+
+  set(BIOFASTING_LIBDEFLATE_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libdeflate")
+  if(NOT EXISTS "${BIOFASTING_LIBDEFLATE_INCLUDE_DIR}/libdeflate_sources.cmake")
+    message(FATAL_ERROR
+      "third_party/libdeflate is missing or incomplete.  Restore it with\n"
+      "    python3 tools/vendor_libdeflate.py\n"
+      "or configure with -DBIOFASTING_VENDORED_LIBDEFLATE=OFF to use the "
+      "host's libdeflate instead.")
+  endif()
+
+  # libdeflate selects its SIMD paths with intrinsics guarded by compiler
+  # version checks, which is not enough when the compiler is much newer than the
+  # assembler it drives: the assembler can then reject an instruction the
+  # compiler was happy to emit.  Upstream probes for exactly that and falls back
+  # with -DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_*.  The probe is carried over
+  # unchanged, because the point of vendoring a release is to build what its
+  # author builds -- without it a machine where upstream compiles would fail
+  # here, which is the portability regression vendoring was meant to remove.
+  # What it prevents is a hard assembler error, never wrong output.
+  function(biofasting_check_assembler_support feature assembly_code)
+    execute_process(COMMAND echo "${assembly_code}"
+      COMMAND "${CMAKE_C_COMPILER}" -c -x assembler -o /dev/null -
+      RESULT_VARIABLE result ERROR_QUIET)
+    if(NOT result STREQUAL "0")
+      add_definitions(-DLIBDEFLATE_ASSEMBLER_DOES_NOT_SUPPORT_${feature})
+      message(STATUS
+        "libdeflate: the assembler rejects ${feature}, which this compiler "
+        "supports; building without it.  Upgrading binutils is recommended.")
+    endif()
+  endfunction()
+  if(UNIX AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    execute_process(COMMAND "${CMAKE_C_COMPILER}" -dumpmachine
+      OUTPUT_VARIABLE biofasting_machine OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(biofasting_machine MATCHES "^(x86_64|i[3-6]86)")
+      if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 8.1)
+        biofasting_check_assembler_support(AVX512VNNI
+          "vpdpbusd %zmm0, %zmm0, %zmm0")
+        biofasting_check_assembler_support(VPCLMULQDQ
+          "vpclmulqdq $0, %zmm0, %zmm0, %zmm0")
+      endif()
+      if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 12.1)
+        biofasting_check_assembler_support(AVX_VNNI
+          "{vex} vpdpbusd %ymm0, %ymm0, %ymm0")
+      endif()
+    elseif(biofasting_machine MATCHES "^aarch64")
+      if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 8.1)
+        biofasting_check_assembler_support(DOTPROD
+          ".arch armv8.2-a+dotprod\nudot v0.4s, v0.16b, v0.16b")
+      endif()
+      if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 9.1)
+        biofasting_check_assembler_support(SHA3
+          ".arch armv8.2-a+sha3\neor3 v0.16b, v0.16b, v0.16b, v0.16b")
+      endif()
+    endif()
+  endif()
+
+  # The source list is upstream's own, written next to the sources by
+  # tools/vendor_libdeflate.py out of upstream's CMakeLists rather than copied
+  # by hand.  A hand-copied list is what goes stale, and its failure is silent:
+  # a new source file sits in the tree, never gets compiled, and the library
+  # builds and behaves like the release before it.
+  include("${BIOFASTING_LIBDEFLATE_INCLUDE_DIR}/libdeflate_sources.cmake")
+  # The paths in that list are upstream's, so they are relative to upstream's
+  # root.  Joining them here keeps the generated file a readable copy of
+  # upstream's own list rather than a CMake expression that only means anything
+  # once a variable is set.
+  list(TRANSFORM BIOFASTING_LIBDEFLATE_SOURCES
+    PREPEND "${BIOFASTING_LIBDEFLATE_INCLUDE_DIR}/")
+
+  add_library(biofasting_libdeflate STATIC ${BIOFASTING_LIBDEFLATE_SOURCES})
+  # PIC because this archive goes into a shared object.  That is exactly the
+  # property the host's archive lacks, and the reason this target exists.
+  set_target_properties(biofasting_libdeflate PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+    C_STANDARD 99)
+  # Upstream's own Release settings (-O2 -DNDEBUG), not this project's -O3.  The
+  # point of vendoring a release is that it is the same code compiled the same
+  # way, and a quiet -O3 here would put every gz row of bench/targets.md out of
+  # reach of a re-measurement.  Stated rather than inherited, for the same
+  # reason the stack protector is: a distro could set these differently and then
+  # the number would belong to a build nobody described.
+  target_compile_definitions(biofasting_libdeflate PRIVATE
+    "$<$<CONFIG:Release>:NDEBUG>")
+  if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(biofasting_libdeflate PRIVATE
+      "$<$<CONFIG:Release>:-O2>")
+  endif()
+  target_include_directories(biofasting_libdeflate PRIVATE
+    "${BIOFASTING_LIBDEFLATE_INCLUDE_DIR}")
+
+  set(BIOFASTING_LIBDEFLATE_LIBRARY biofasting_libdeflate)
+  set(BIOFASTING_LIBDEFLATE_LINKAGE "vendored, static")
+
+else()
+
+  find_path(BIOFASTING_LIBDEFLATE_INCLUDE_DIR NAMES libdeflate.h)
+  if(BIOFASTING_LIBDEFLATE_STATIC)
+    find_library(BIOFASTING_LIBDEFLATE_STATIC_LIBRARY NAMES libdeflate.a)
+    if(NOT BIOFASTING_LIBDEFLATE_STATIC_LIBRARY)
+      message(FATAL_ERROR
+        "BIOFASTING_LIBDEFLATE_STATIC is ON but no libdeflate.a was found.")
+    endif()
+    set(BIOFASTING_LIBDEFLATE_LIBRARY "${BIOFASTING_LIBDEFLATE_STATIC_LIBRARY}")
+    set(BIOFASTING_LIBDEFLATE_LINKAGE "host, static")
+  else()
+    find_library(BIOFASTING_LIBDEFLATE_SHARED_LIBRARY NAMES deflate)
+    if(NOT BIOFASTING_LIBDEFLATE_SHARED_LIBRARY)
+      message(FATAL_ERROR
+        "libdeflate was not found.  It is required for the gzip path.  Debian "
+        "and Ubuntu: apt install libdeflate-dev.  macOS: brew install "
+        "libdeflate.  Or drop -DBIOFASTING_VENDORED_LIBDEFLATE=OFF and let the "
+        "vendored copy in third_party/ be used instead.")
+    endif()
+    set(BIOFASTING_LIBDEFLATE_LIBRARY "${BIOFASTING_LIBDEFLATE_SHARED_LIBRARY}")
+    set(BIOFASTING_LIBDEFLATE_LINKAGE "host, shared")
+  endif()
+
+  if(NOT BIOFASTING_LIBDEFLATE_INCLUDE_DIR)
+    message(FATAL_ERROR
+      "libdeflate's headers were not found next to its library.  Install the "
+      "development package (libdeflate-dev / brew install libdeflate).")
+  endif()
+
+endif()
+
+# A gz benchmark number is only reproducible if it says which inflate produced
+# it, so the version travels into build_info() like the compiler does.
+file(STRINGS "${BIOFASTING_LIBDEFLATE_INCLUDE_DIR}/libdeflate.h"
+  BIOFASTING_LIBDEFLATE_VERSION_LINE REGEX "^#define LIBDEFLATE_VERSION_STRING")
+string(REGEX REPLACE ".*\"([^\"]+)\".*" "\\1" BIOFASTING_LIBDEFLATE_VERSION
+  "${BIOFASTING_LIBDEFLATE_VERSION_LINE}")
+if(NOT BIOFASTING_LIBDEFLATE_VERSION)
+  set(BIOFASTING_LIBDEFLATE_VERSION "unknown")
+endif()
+set(BIOFASTING_LIBDEFLATE_REPORTED
+  "${BIOFASTING_LIBDEFLATE_VERSION} (${BIOFASTING_LIBDEFLATE_LINKAGE})")
 
 set(BIOFASTING_NANOBIND_ARGS NB_STATIC)
 if(BIOFASTING_RELAX_MIN_SIZE)
@@ -107,7 +286,10 @@ endif()
 
 target_include_directories(_core PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src/core"
-  "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
+  "${BIOFASTING_LIBDEFLATE_INCLUDE_DIR}")
+
+target_link_libraries(_core PRIVATE "${BIOFASTING_LIBDEFLATE_LIBRARY}")
 
 # The target architecture of the build, not of the machine running cmake:
 # cibuildwheel cross-compiles linux-aarch64, and the C++ preprocessor macros in

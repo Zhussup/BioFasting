@@ -6,6 +6,18 @@
 #     pip install --no-build-isolation -e .
 #     pytest
 #
+# No system library is needed.  The gz path's decompressor, libdeflate, used to
+# be one -- CMake's configure failed hard without it, and being a shared library
+# it had to be present at run time as well as at build time.  It is vendored now
+# (third_party/libdeflate, put there by tools/vendor_libdeflate.py) and compiled
+# into a static PIC archive that travels inside the wheel, so a build needs
+# nothing from the host but a C and a C++ compiler.  A distro packager who wants
+# to build against their own libdeflate can:
+#
+#     CMAKE_ARGS="-DBIOFASTING_VENDORED_LIBDEFLATE=OFF" pip install .
+#
+# which is a supported configuration and not the default; see CMakeLists.txt.
+#
 # Activation is not cosmetic.  With editable.rebuild = true, importing the
 # package runs `cmake --build` on the C++ sources, and it looks for cmake and
 # ninja on PATH -- `.venv/bin/pytest` alone does not put them there, and the
@@ -31,6 +43,11 @@ scikit-build-core==1.1.1
 cmake==4.4.3
 ninja==1.13.2
 pytest==9.1.1
+# The zero-copy views return numpy arrays, and pyproject.toml therefore declares
+# numpy as a runtime dependency.  It is pinned here as well because the view
+# tests are differential -- a numpy major bump is a thing to do deliberately,
+# not something a fresh .venv should decide on its own.
+numpy==2.5.3
 # Release tooling, here so that the cibuildwheel configuration in pyproject.toml
 # can be validated locally without Docker:
 #     cibuildwheel --platform linux --print-build-identifiers

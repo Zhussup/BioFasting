@@ -51,6 +51,13 @@ directory) produced byte-identical `MANIFEST.json` and passed `--verify`.
 
 Total: 476 MB of content, 647 MB on disk.
 
+Two input families are **generated, not stored**: the FASTA/FASTQ reads come from
+`gen_data.py`'s SHA-256 keystream (the files above are its output, kept on disk so
+a run does not have to re-derive them), and the protein corpus `run.py` uses for
+`protparam-*` is derived in memory at run time by `make_protein_corpus()`.  Both
+are integer-only counter-mode constructions with no float threshold anywhere, so
+the same command yields the same bytes and the same residues on any machine.
+
 ### What "realistic" FASTQ means here
 
 A corpus of uniform random bytes would compress at ~1.25× and would flatter any
@@ -113,7 +120,52 @@ than silent until the end.
 - `fasta-random` — fixed 150 bp slices, pyfaidx vs `SeqIO.index`, reported as
   **latency per access** rather than MB/s (see below);
 - `ops-revcomp`, `ops-gc` — the in-memory operations from the draft table in the
-  top-level README.
+  top-level README;
+- `ops-translate` — translation over the same reads, against `Seq.translate` and
+  a dict-per-codon baseline;
+- `ops-gc123`, `ops-gc-skew`, `ops-molecular-weight`, `ops-crc64`, `ops-gcg`,
+  `ops-protein-roundtrip`, `ops-cai-calculate`, `ops-six-frame` — the
+  `Bio.SeqUtils` measurement functions, plus `sequtils-gc123-genome`: the same
+  call on one 40 Mbp contig, where the reference takes eight seconds and the
+  per-read ratio stops describing anything.  These rows run over a *smaller*
+  slice of the same reads (`SEQUTILS_READS`, 20,000) because their reference
+  rows cost three orders of magnitude more per call, and the count is in each
+  row's description so that a row over a subset is never mistaken for one over
+  the whole corpus.
+- `protparam-*` — `Bio.SeqUtils.ProtParam.ProteinAnalysis`, eleven methods, over
+  a corpus of 400 generated proteins (200 × 150, 120 × 300, 75 × 1,024, 5 ×
+  10,000 residues; SwissProt residue frequencies, `PROTEIN_SEED`), **a fresh
+  object per call** because `count_amino_acids` memoises into the instance and a
+  row timed on a used object measures a cache hit.  Four of the eleven also carry
+  the best pure-Python rewrite, kept because it is the number that says whether a
+  kernel was worth writing at all — 1.10× to 1.84×, against 36.9×, 43.8× and
+  37.7× for the three that got one.
+
+Each workload also carries a **`biofasting`** row once the package is
+importable, so the thing being built is measured by the same harness, against
+the same reference, under the same digest gate as everything else.  The runner
+does not need it: without an installed package the rows are absent, the rest of
+the table is unchanged, and the run is still the Phase 0 comparison.
+
+A time is only meaningful against the binary that produced it, so the results
+JSON records `biofasting.build_info()` next to the host facts — compiler,
+C++ standard, optimisation flags, the SIMD rung `seqops_level()` actually
+dispatched to, and what `best_cpu_level()` says the CPU could support.  A
+machine with AVX-512 can be running the scalar kernels, and a number quoted
+without the rung behind it is a number about an unknown program.
+
+### The zero-copy views are measured elsewhere, on purpose
+
+`bench/grid.py` measures the `FastaGrid`/`FastqGrid` arrays, and it is a
+separate file because the runner's model of an implementation — yield each
+record, then do `len()` on it — cannot measure a view at all.  A grid array is
+two integer fields over a mapped file: the parse harness never touches the
+bytes, so the file is never read, and the row would win by doing nothing.
+
+`grid.py` therefore measures the three things a caller buys — the array, an
+operation over it, and the RSS the process pays to hold it — and gates the
+array's *content* against `SeqIO.parse` before quoting any time.  It also
+measures why the corpus FASTQ files have no grid: the width of their headers.
 
 ### Random access is measured in latency, not throughput
 
@@ -138,6 +190,15 @@ Every implementation is additionally held to a per-pass budget
 skipped, the single warmup sample is reported, and the row is flagged
 `TRUNCATED` — a degraded measurement is labelled as one instead of being
 presented as a median of N.
+
+For the compressed pair (`fastq-gz-index`, `fastq-gz-random`) the runner writes
+one derived file and caches it: a **BGZF copy of the reads**, under
+`build/bench-cache/`, because `SeqIO.index` refuses a plain `.gz` outright and
+the reference row needs a compressed file it will open.  It is written from the
+plain corpus file, keyed on the source's name and size, made once and reused; it
+is never corpus and never tracked.  It costs about twenty seconds and 174 MB the
+first time, and the run asks for it only when those two groups are actually
+selected (`--only`).
 
 ### How to read the numbers
 

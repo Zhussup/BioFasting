@@ -20,6 +20,7 @@ COMPILE_TIME_KEYS = {
     "arch",
     "cmake",
     "nanobind",
+    "libdeflate",
     "extra_cxx_flags",
     "relax_min_size",
     "stack_protector",

@@ -37,6 +37,15 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      # No libdeflate install step, and that absence is the test.  The gz path's
+      # decompressor is vendored in third_party/libdeflate and compiled into the
+      # wheel, so this job now proves what a user's machine would have to prove:
+      # that the build needs nothing from the host but a C and a C++ compiler,
+      # and that the result imports with no libdeflate present.  While the step
+      # was here it hid exactly the failure it looked like it was preventing --
+      # a wheel that only links on a machine that also installed libdeflate.
+      # The escape hatch to the host's library is exercised by the werror job.
+
       - name: Install the test runner
         run: python -m pip install --upgrade pip pytest
 
@@ -65,13 +74,31 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Install libdeflate
+        # The one job that builds against the host's libdeflate, so that
+        # -DBIOFASTING_VENDORED_LIBDEFLATE=OFF keeps working instead of quietly
+        # rotting.  It is the configuration a distro packager would use, and it
+        # is the only place a system libdeflate is needed at all: the test job
+        # above installs nothing.
+        run: sudo apt-get update && sudo apt-get install -y libdeflate-dev
+
       - name: Install the test runner
         run: python -m pip install --upgrade pip pytest
 
       - name: Build with warnings as errors
+        # -Wpedantic as well as the -Wall -Wextra the project sets itself, so
+        # that what this job proves is the strictest thing the core is claimed
+        # to survive rather than a weaker one.  It reaches nanobind's sources
+        # too, which are in the same target; -Werror does not, so their
+        # warnings stay warnings and only ours can fail the build.  The
+        # vendored C is a separate target with upstream's own flags and is not
+        # held to -Werror, which is one more reason it is a separate target.
         run: python -m pip install .
         env:
-          CMAKE_ARGS: -DBIOFASTING_WERROR=ON
+          CMAKE_ARGS: >-
+            -DBIOFASTING_WERROR=ON
+            -DBIOFASTING_VENDORED_LIBDEFLATE=OFF
+            -DCMAKE_CXX_FLAGS=-Wpedantic
 
       - name: Test
         run: python -m pytest -v

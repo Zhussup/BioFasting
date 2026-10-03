@@ -13,6 +13,10 @@ std::map<std::string, std::string> build_info() {
       {"arch", BIOFASTING_BUILD_ARCH},
       {"cmake", BIOFASTING_BUILD_CMAKE_VERSION},
       {"nanobind", BIOFASTING_BUILD_NANOBIND_VERSION},
+      // Which inflate produced a .gz row, and whether it travels inside the
+      // wheel or has to be on the host.  Without it a gz number is not
+      // reproducible and a portability failure is invisible.
+      {"libdeflate", BIOFASTING_BUILD_LIBDEFLATE},
       // Reported as named decisions rather than one flag string: see the note
       // at the top of build_config.hpp.in for why a flag string would be empty
       // on exactly the builds anyone would ask about.

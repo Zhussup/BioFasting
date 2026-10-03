@@ -29,9 +29,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-# No runtime dependencies yet by design: numpy arrives with the zero-copy views
-# in step 1.3, and nothing before that needs it.
-dependencies = []
+# One runtime dependency, and it arrives with the zero-copy views it exists
+# for: open_fasta_grid()/open_fastq_grid() return numpy arrays, so the package
+# that offers them cannot be installed without it.  Nothing else here needs
+# numpy -- the readers, the sequence ops and every kernel are pure C++ -- and
+# nothing imports it until a view is asked for, so it is a dependency of the
+# API surface rather than of the import.
+dependencies = ["numpy>=1.22"]
 
 [project.urls]
 Repository = "https://github.com/Zhussup/BioFasting"
