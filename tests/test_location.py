@@ -42,8 +42,18 @@ import sys
 
 import pytest
 
-from Bio import BiopythonParserWarning
-from Bio.SeqFeature import (
+#   The module is a differential comparison against Biopython from end to end,
+#   so with the reference absent there is nothing in it to run.  The guard is an
+#   `importorskip` above the `Bio` imports rather than a `needs_biopython`
+#   marker, because a module-level import that raises is a collection error --
+#   the run stops before any marker is reached.  CI builds the wheel with no
+#   reference installed, and a skip is the answer there; an error is not.
+pytest.importorskip(
+    "Bio", reason="Biopython is not installed; it is the differential reference"
+)
+
+from Bio import BiopythonParserWarning  # noqa: E402
+from Bio.SeqFeature import (  # noqa: E402
     AfterPosition,
     BeforePosition,
     CompoundLocation,
@@ -57,7 +67,7 @@ from Bio.SeqFeature import (
     WithinPosition,
 )
 
-from biofasting import _core
+from biofasting import _core  # noqa: E402
 
 BENCH = Path(__file__).resolve().parent.parent / "bench"
 

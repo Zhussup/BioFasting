@@ -74,6 +74,7 @@ def test_seguid_hand_checked_values():
 # --------------------------------------------------------------------------
 
 
+@needs_biopython
 def test_a_seq_is_read_as_its_bytes_and_a_str_as_utf8():
     """The one coercions in the module, and the one place they differ.  A
     `Seq` has ``__bytes__``, so ``bytes(seq)`` succeeds and the string is never

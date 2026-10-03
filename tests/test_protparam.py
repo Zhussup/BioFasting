@@ -38,6 +38,7 @@ import importlib.util
 import io
 import random
 import struct
+import sys
 
 import pytest
 
@@ -49,6 +50,16 @@ needs_biopython = pytest.mark.skipif(
     importlib.util.find_spec("Bio") is None,
     reason="Biopython is not installed; it is the differential reference",
 )
+
+#: `sum()` compensates a float term from CPython 3.12 on and adds it plainly
+#: before that, and the kernel implements the 3.12 rule -- `sequtils.hpp` is
+#: where that is written down.  Two of the tests below compare the kernel with
+#: the interpreter's own `sum`, so they carry an interpreter in them and the
+#: comparison is only true of one that has the rule.  The mode distinction they
+#: are about is asserted on every version; the part that is a fact about 3.12 is
+#: asserted where it is a fact.  What that leaves behind is pinned by
+#: `test_the_pre_3_12_sum_is_not_the_one_this_package_uses` below.
+compensated_sum = sys.version_info >= (3, 12)
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -507,6 +518,10 @@ def test_the_gravy_flag_is_not_a_boolean():
     4.2])` is -3.5999999999999996.  The only thing between the two is the type of
     the first value, which is what the flag carries -- and it is what makes the
     reference answer -3.6 for "IYAR" under the Parker scale.
+
+    The kernel's own answer is the same on every interpreter, so it is asserted
+    as the literal it is; agreeing with `sum()` is a second claim, and it is made
+    only where the interpreter's `sum` is the rule the kernel implements.
     """
     values = (-8.0, -1.9, 2.1, 4.2)
     floats, all_float = raw_table(
@@ -514,7 +529,9 @@ def test_the_gravy_flag_is_not_a_boolean():
     )
     total, bad = _core.molecular_weight_mass(b"ABCD", floats, all_float)
     assert bad == -1
-    assert total == sum(values)
+    assert total == -3.5999999999999996
+    if compensated_sum:
+        assert total == sum(values)
 
     mixed, with_int = raw_table(
         [
@@ -526,9 +543,44 @@ def test_the_gravy_flag_is_not_a_boolean():
     )
     total, bad = _core.molecular_weight_mass(b"ABCD", mixed, with_int)
     assert bad == -1
-    assert total == sum([-8, -1.9, 2.1, 4.2])
     assert total == -3.6
+    if compensated_sum:
+        assert total == sum([-8, -1.9, 2.1, 4.2])
     assert total != _core.molecular_weight_mass(b"ABCD", floats, all_float)[0]
+
+
+@pytest.mark.skipif(compensated_sum, reason="CPython 3.12 and later compensate")
+def test_the_pre_3_12_sum_is_not_the_one_this_package_uses():
+    """The one place this package and the reference part company, on the record.
+
+    On 3.10 and 3.11 `sum()` adds a float plainly, and the kernel has a mode that
+    reproduces that exactly -- but `_dense_scale` chooses the flag from the
+    *type* of a table value and not from the interpreter, so a float entry is
+    marked compensated there too and `gravy` and `molecular_weight` can answer a
+    last bit differently from the reference.  Two ways out, and both are a
+    decision rather than a patch: choose the flag on `sys.version_info`, or raise
+    the floor to the interpreter that has the rule.  This test asserts the
+    divergence is there, so that either one turns it red and the state of the
+    package is read from a test instead of being inferred from a version.
+    """
+    scale = gravy_scales["Parker"]
+    _, _, flags = protparam._dense_scale(scale)
+    floats = [letter for letter, value in scale.items() if type(value) is float]
+    assert floats
+    assert all(flags[ord(letter)] == _core.kCompensated for letter in floats)
+
+    values = (-8.0, -1.9, 2.1, 4.2)
+    compensated, compensated_flags = raw_table(
+        [(byte, value, _core.kCompensated) for byte, value in zip(b"ABCD", values)]
+    )
+    plain, plain_flags = raw_table(
+        [(byte, value, _core.kPlain) for byte, value in zip(b"ABCD", values)]
+    )
+    #   The mode the package uses against the interpreter's rule, and the mode it
+    #   does not against the same rule: the two disagree, and the second agrees.
+    by_mode = _core.molecular_weight_mass(b"ABCD", compensated, compensated_flags)
+    assert by_mode[0] != sum(values)
+    assert _core.molecular_weight_mass(b"ABCD", plain, plain_flags)[0] == sum(values)
 
 
 def test_the_first_float_after_an_integer_run_is_added_plainly_too():
@@ -617,18 +669,24 @@ def test_the_instability_kernel_is_not_the_compensated_one():
     "EPCM" is the shortest sequence found whose three dipeptide weights come out
     differently the two ways: 47.32000000000001 added up one at a time, 47.32
     added up with compensation.  `instability_index` is the plain one.
+
+    Which of the two `sum()` is is the interpreter's business and not this
+    kernel's, so the contrast with it is drawn where it exists; the kernel's own
+    answer is the naive one on every version, and that is the assertion the test
+    is named for.
     """
     text = "EPCM"
     values = [DIWV[text[i]][text[i + 1]] for i in range(len(text) - 1)]
     naive = 0.0
     for value in values:
         naive += value
-    assert naive != sum(values)
     total = _core.instability_index_sum(
         text.encode("ascii"), protparam._DIWV_TABLE, protparam._AA_MAP
     )
     assert total == naive
-    assert total != sum(values)
+    if compensated_sum:
+        assert naive != sum(values)
+        assert total != sum(values)
     assert ProteinAnalysis(text).instability_index() == (10.0 / 4) * naive
 
 

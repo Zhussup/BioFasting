@@ -205,6 +205,7 @@ def test_every_corpus_file_has_the_checksum_and_size_the_generator_recorded():
         assert (DATA / entry["path"]).stat().st_size == entry["stored_bytes"], entry["path"]
 
 
+@needs_biopython
 @needs_corpus
 @pytest.mark.parametrize("relative", corpus_files())
 def test_every_corpus_file_yields_the_record_count_the_generator_recorded(relative):

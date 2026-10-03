@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cstring>
-#include <limits>
 
 #include "line.hpp"
 
@@ -126,25 +125,6 @@ bool has_unescaped_quote(std::string_view value) noexcept {
     }
   }
   return false;
-}
-
-// The reference's `int(content)` for the sizes both formats hand it, which are
-// decimal digits and nothing else.  Python's `int` also takes a sign, an
-// underscore between digits and every Unicode digit; a size written that way is
-// one this reader does not reproduce, and the caller declines rather than
-// guess at it.
-bool decimal_int(std::string_view text, std::int64_t& out) noexcept {
-  if (text.empty()) return false;
-  std::int64_t value = 0;
-  for (const char c : text) {
-    if (c < '0' || c > '9') return false;
-    if (value > (std::numeric_limits<std::int64_t>::max() - (c - '0')) / 10) {
-      return false;
-    }
-    value = value * 10 + (c - '0');
-  }
-  out = value;
-  return true;
 }
 
 // One feature's qualifiers, before the consumer's value handling: the key, the

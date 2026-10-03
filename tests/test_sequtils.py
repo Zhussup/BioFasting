@@ -404,6 +404,7 @@ def test_codon_adaptation_index_rejects_an_illegal_codon():
         biofasting.CodonAdaptationIndex(["ACGTTTNNN"])
 
 
+@needs_biopython
 def test_codon_adaptation_index_reports_the_gene_name_of_a_seqrecord():
     from Bio.Seq import Seq
     from Bio.SeqRecord import SeqRecord
