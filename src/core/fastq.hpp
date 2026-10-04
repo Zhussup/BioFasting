@@ -142,6 +142,15 @@ class FastqScanner {
   std::string scratch_other_title_;
 };
 
+// A scanner's failure as one string: the parser's own message plus where it was
+// found, which the parser alone cannot say and a malformed file of a million
+// records makes worth having.
+//
+// Free, and not a member, because two callers report the same failure -- the
+// scanner's own binding and the Arrow table builder -- and two copies of the
+// wording would be two ways for one malformed byte to read.
+std::string located_error(const FastqScanner& scanner);
+
 // One record, as a place in the file rather than as bytes.
 //
 // `plain` is the whole design in one bool.  A record whose four fields are

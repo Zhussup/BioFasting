@@ -225,6 +225,51 @@ class FastqIndex:
     def plain(self, name: str) -> bool: ...
     def index_entry(self, name: str) -> tuple[str, int, int, int, bool]: ...
 
+class ArrowTable:
+    """The record tables, built in Arrow's own layout (PLAN 2.3).
+
+    Not built directly by callers: `biofasting.arrow.read_fastq_table` and
+    `read_fasta_table` are the file-level pieces around it, the same split as
+    `_core.FastqScanner` against `biofasting.fastq.open_fastq`.  This class does
+    own its bytes, unlike every other reader here -- a column has to be
+    contiguous and a file's records are not -- so it is the table, not the file,
+    that `buffers()` hands out views of.
+    """
+
+    @staticmethod
+    def from_fastq(
+        source: bytes | bytearray | memoryview | mmap.mmap,
+    ) -> ArrowTable:
+        """(name, description, sequence, quality).
+
+        Raises `ValueError` on a malformed record, with the parser's message
+        and the record number and byte offset where it was found.
+        """
+        ...
+    @staticmethod
+    def from_fastq_gzip(
+        source: bytes | bytearray | memoryview | mmap.mmap,
+    ) -> ArrowTable: ...
+    @staticmethod
+    def from_fasta(
+        source: bytes | bytearray | memoryview | mmap.mmap,
+    ) -> ArrowTable:
+        """(name, description, sequence).
+
+        Raises `ValueError` on a duplicate key, with the reference's wording.
+        """
+        ...
+    @property
+    def names(self) -> list[str]: ...
+    @property
+    def length(self) -> int: ...
+    @property
+    def column_count(self) -> int: ...
+    # One (offsets, data) pair a column, in table order: read-only numpy arrays
+    # over the table's own bytes, which is exactly what
+    # `pyarrow.Array.from_buffers` takes.  They hold the table alive.
+    def buffers(self) -> list[tuple[object, object]]: ...
+
 def seqops_level() -> str: ...
 def reverse_complement(sequence: bytes | bytearray | memoryview) -> bytes: ...
 def gc_fraction(sequence: bytes | bytearray | memoryview) -> float:

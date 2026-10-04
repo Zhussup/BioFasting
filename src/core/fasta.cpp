@@ -138,29 +138,37 @@ const FastaEntry* FastaIndex::find(std::string_view name) const noexcept {
   return &entries_[it->second];
 }
 
-std::string FastaIndex::sequence(const FastaEntry& entry) const {
-  std::string out;
-  out.reserve(entry.length);
+void append_sequence(std::string& out, const char* data, std::size_t size,
+                     const FastaEntry& entry) {
+  // Appending and not resizing, deliberately: a resize would zero-fill the
+  // bytes only to have them overwritten, and for a chromosome that zero-fill is
+  // a second 40 MB write.
+  out.reserve(out.size() + entry.length);
 
   if (entry.strided) {
     const std::size_t bases = entry.line_bases;
     const std::size_t full_lines = entry.length / bases;
     const std::size_t tail = entry.length % bases;
-    const char* line = data_ + entry.offset;
+    const char* line = data + entry.offset;
     for (std::size_t i = 0; i < full_lines; ++i) {
       out.append(line, bases);
       line += entry.line_width;
     }
     out.append(line, tail);
-    return out;
+    return;
   }
 
   std::size_t cursor = entry.offset;
   while (cursor < entry.end) {
-    const Line line = read_line(data_, size_, cursor);
+    const Line line = read_line(data, size, cursor);
     append_without_spaces(out, line.text, rstripped_size(line.text, line.len));
     cursor = line.next;
   }
+}
+
+std::string FastaIndex::sequence(const FastaEntry& entry) const {
+  std::string out;
+  append_sequence(out, data_, size_, entry);
   return out;
 }
 

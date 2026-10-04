@@ -1610,3 +1610,158 @@ optional extra, and the number above is honestly an x86-64 number.
 measures) are recorded in the delivered section below; the arm64 packaging
 decision — require parasail and pay a source build, or vendor its C into
 `third_party/` as libdeflate was — is the owner's.
+
+## Delivered: the pairwise aligner (PLAN 2.1, 2026-10-04)
+
+**NO COMMITS AND NO PUSHES.**  This section is written by the agent; the owner
+commits and pushes.  Nothing here touches the index, the history or a remote.
+
+`bench/bench_alignment.py` re-measures the six rows of the ranking pass through
+the delivered call — `biofasting.alignment.Aligner.score`/`.align` — not through
+parasail directly.  Same seed (`random.Random(7)`), same shapes, same scheme, so
+a difference between this table and the one above is a difference the wrapper
+made.  Gate first (both sides score every pair of every row; a mismatched row is
+printed `INVALID` and contributes no time), median of nine after warm-up, and
+the traceback column takes `next(iter(theirs.align(...)))` so the reference is
+not charged for enumerating every optimum.
+
+| row | pairs | reference µs | wrapper µs | speedup | target | verdict |
+|---|---:|---:|---:|---:|---:|---|
+| `dna-global-150x512` | 512 | 70.67 | **14.56** | 4.85× | 22.33 | PASS |
+| `dna-global-1k` | 1 | 3158.24 | **180.66** | 17.48× | 187.27 | PASS |
+| `dna-global-10k` | 1 | 330340.89 | **19473.78** | 16.96× | 20616.17 | PASS |
+| `dna-semiglobal-150-vs-10k` | 1 | 4966.96 | **509.97** | 9.74× | 605.10 | PASS |
+| `dna-local-1k-vs-20k` | 1 | 124319.75 | **3655.57** | 34.01× | 4044.98 | PASS |
+| `protein-blosum62-300` | 1 | 284.96 | **35.34** | 8.06× | 36.05 | PASS |
+
+With the traceback (the wrapper's `align()` against the reference's first
+optimum): 177.62 / 7814.48 / 937590.32 / 26647.08 / 296625.57 / 815.53 µs
+against **32.24 / 363.56 / 68344.78 / 777.80 / 14066.22 / 94.85**, i.e. **5.51×,
+21.49×, 13.72×, 34.26×, 21.09×, 8.60×**.  Per cell the wrapper's score-only DP
+is 0.647 / 0.181 / 0.195 / 0.340 / 0.183 / 0.394 ns against the reference's
+3.141 / 3.165 / 3.303 / 3.311 / 6.222 / 3.177.
+
+**The target column is the ranking pass's own `parasail` number plus the
+wrapper's ~2 µs crossing**, which is the honest way to state a gate for a
+wrapper: the kernel cannot be bought without the call.  Every row passes it, and
+the two that were once the weakest are the two the wrapper was optimized for.
+
+**The four findings, because they are what the numbers are.**  (1) *The wrapper
+was the result on two rows.*  The first delivered run was 1.40× on the protein
+row and 2.77× on `150x512`.  Cause, measured: the scheme was re-derived on every
+call, and reading BLOSUM62 into 576 checked integers cost **184 µs a call**, six
+times the 29 µs kernel it fed; `_as_text` also scanned every character of both
+sequences in Python (15 µs of a 150×150 call's 25 µs).  Deriving the scheme once
+in `__init__` (a scheme is a property of the aligner, so a bad price is now
+reported at construction), memoizing the matrix and the sized binding per
+alphabet, and replacing the scan with one `str.encode("latin-1")` (15 µs →
+0.18 µs, same exceptions) took the protein row 1.40× → **8.06×** and `150x512`
+2.77× → **4.85×**.  (2) *`counts()` had to be lazy.*  The column walk is one
+Python step per aligned letter and was 24 µs of the 46 µs a 150-base pair cost
+to align — over half of it, for numbers the caller had not asked for.  The gap
+half stays in `_walk`, which is the only place that knows which runs were
+terminal; the column half runs on first call and is cached.  `150x512` traceback
+3.84× → **5.51×**.  (3) *The `sg` correction.*  With all ends free the optimum
+can have **no substitution column**: `'AAAA'`/`'TTTT'` is
+`'AAAA----'`/`'----TTTT'`, every letter in a free gap, score 0, and parasail's
+recurrence cannot represent an insertion run adjacent to a deletion run, so its
+`sg` says **−2**.  The score is `max(sg, 0)` — verified 3,000 random pairs, 51
+of them with a negative raw `sg`, 3,000/3,000 against the reference — and the
+missing path is built explicitly by `_walk` over two runs, which the reference
+reports as its **second** optimum.  (4) *The reference accepts only its own
+`Array`*: another array with an `alphabet` is taken and then scores nonsense —
+`ValueError: sequence item 0 is out of bound (71, should be < 24)`.  The wrapper
+takes either, so the bench hands each side its own; the trap is in
+`bench_alignment.py`'s docstring because it cost a run.
+
+**Verdict: `align`/`score` delivered at 4.9×–34× score-only and 5.5×–34× with
+the traceback**, on x86-64 with the accelerator installed, whole-call, gate
+first.  The wrapper's own overhead is inside those numbers rather than beside
+them, and the arm64 caveat above is unchanged: parasail has no aarch64 wheel, so
+the extra stays optional and the source build stays the owner's decision.
+WFA2-lib is still not vendored, so `dna-global-10k` is served by an unbanded
+`nw` at 16.96× and not by an edit-distance algorithm; the 0.17–0.52 ns a cell
+with traceback remains the recorded target for a purpose-written SIMD kernel if
+arm64 ever matters more than the wrapper does.  Nothing was committed or pushed.
+
+## Phase 2 ranking, ninth pass: Arrow interop (PLAN 2.3, 2026-10-04)
+
+**NO COMMITS AND NO PUSHES.**  This section is written by the agent; the owner
+commits and pushes.
+
+PLAN 2.3 asks for an Arrow interop *and* a compatibility story with
+`polars-bio` rather than a collision with it.  Both are measurable before either
+is designed, so `bench/rank_arrow.py` measures them: the corpus as the rows, the
+four columns `polars-bio` itself produces as the schema, and four producers —
+the Biopython reference, `polars-bio` 0.36.0 (Rust, needletail), a pure-Python
+producer built from C-level calls, and this package's own reader with the table
+built in Python.  **The gate runs before any time is quoted**: every producer's
+table is compared to the reference's column by column and value by value on
+every row, so a table that is not the same table is never a faster table.
+
+| row | records | MB | reference | `polars-bio` | pure-Python | ours (reader only) |
+|---|---:|---:|---:|---:|---:|---:|
+| `fastq-10k` | 10,000 | 3.7 | 14.511 µs/rec | **1.694** | 1.295 | 1.554 |
+| `fastq-gz-1m` | 1,000,000 | 171.6 | 19.068 µs/rec | 5.245 | 4.510 | **2.834** |
+| `fastq-1m` | 1,000,000 | 369.3 | 15.770 µs/rec | **0.970** | 2.106 | 1.695 |
+| `fasta-1mb` | 1 | 1.0 | 269 MB/s | 72 MB/s | 191 MB/s | **608 MB/s** |
+| `fasta-100mb` | 5 | 101.7 | 197 MB/s | 307 MB/s | 224 MB/s | **599 MB/s** |
+
+Median of five (three on the 100 MB rows), after warm-up.  Rows read µs a
+record where the records are 150 bases and MB/s where the file is five records
+of 2–40 Mbp: a µs-per-record column on `fasta-100mb` is a number about memcpy
+with a division attached.
+
+**What the table says.**
+
+* **The reference is not the target, and neither is the fastest number in the
+  table.**  `SeqIO.parse` into lists is 15.8 µs a read — 16× `polars-bio` — and
+  it needs `gzip.open` by hand, because `SeqIO.parse` on a `.gz` still dies on
+  byte 0x8b in 1.88.  The tool to beat is `polars-bio` at **0.970 µs a read** on
+  the plain million, and it is a Rust reader that produces exactly these
+  columns; that is the niche this pass has to be compatible with.
+* **This package's reader already wins three of the five rows** — gzip by 1.85×
+  (libdeflate whole-file inflation against a streaming zlib), `fasta-1mb` by
+  8.4× and `fasta-100mb` by 1.95× — **with the table built one Python call per
+  record**, which is the part that does not scale: it is why the plain million
+  is `polars-bio`'s row (0.970 against 1.695) and why the 10 kb row is close to
+  the pure-Python producer rather than below it.
+* **The pure-Python producer is a floor on the small row and not a floor at
+  all on the big one.**  It is 0.937 µs a read on `fastq-10k` — the cheapest
+  thing that can be written above C-level calls, one `bytes.split` for the whole
+  file and four slices — and 2.106 µs on `fastq-1m`, *slower* than the reader it
+  is supposed to bound, because materialising four million line objects costs
+  more than the Python call per record it saves.  A floor built out of the
+  fastest individual C calls is not the fastest program; the row is kept
+  because that mistake is easy to make and this is the measurement that shows
+  it.
+* **`polars-bio` is not uniformly fast.**  72 MB/s on `fasta-1mb` against our
+  608, and 307 MB/s on the 100 MB file, where a straight memcpy of the file is
+  thousands of MB/s — its FASTA path goes through the object-store reader with
+  chunking, which is the right design for S3 and overhead for a local file.
+  That is a finding about *its* shape, and it is the reason this package's job
+  here is a bridge and not a reimplementation.
+
+**The target, measured rather than asserted.**  The components are known: the
+delivered scanner reads a plain FASTQ at **0.226 µs a read** (M1/M8), a record's
+payload is ~320 bytes of sequence, quality and header, and copying 320 bytes at
+memory bandwidth is ~0.03 µs.  So a C++ builder that scans the mapped file and
+writes Arrow's own buffers — two offset arrays and the byte data, `from_buffers`
+on the Python side so the table owns no copy of its own — should land at
+**0.3–0.5 µs a read, 2–3× `polars-bio` and ~30× the reference**, and at
+multi-GB/s on FASTA, where the only real work is de-column-ing 100 MB once.
+
+**Verdict: `read_fastq_table`/`read_fasta_table` behind Arrow buffers is
+`perf`.**  The deliverable is a producer, not a polars plugin: `polars-bio`
+already owns "read every format into a DataFrame", this package owns FASTA and
+FASTQ and can hand the same columns over at a lower cost, and `pl.from_arrow` is
+zero-copy, so a caller chooses per row instead of per library.  One divergence
+belongs in the contract rather than in a bug report: a FASTA header with no
+description (`>chrS`) gives Biopython and this package `""` and gives
+`polars-bio` a **null**, which is a different value in a table and not a
+rounding difference.  The pass normalises it to compare and says so.
+
+**Still open.**  The builder itself is the next milestone's work; nothing in it
+has been delivered.  `pyarrow`, `polars` and `polars-bio` are benchmark
+dependencies and are not runtime dependencies of the package — the Arrow path
+is to be optional, like the aligner, and for the same kind of reason.

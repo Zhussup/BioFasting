@@ -88,6 +88,7 @@ set(BIOFASTING_CORE_SOURCES
   src/core/sequtils.cpp
   src/core/protparam.cpp
   src/core/write.cpp
+  src/core/arrowout.cpp
   src/core/inflate.cpp)
 
 # libdeflate: the gz path's decompressor, and the one third-party dependency the

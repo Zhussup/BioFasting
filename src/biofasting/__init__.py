@@ -7,7 +7,16 @@ translation of a reading frame (`translate`) -- the first kernels in the project
 that dispatch on the CPU at runtime.  `biofasting.sequtils` adds the other half
 of `Bio.SeqUtils`: the functions that measure a sequence rather than change it,
 from `GC123` to `molecular_weight`, plus the four checksums in
-`biofasting.checksum`.  What the scaffold
+`biofasting.checksum`.  `biofasting.alignment` adds the one wrapper: the
+pairwise aligner, `Bio.Align.PairwiseAligner`'s scoring scheme executed on
+parasail's SIMD kernels, as an optional accelerator
+(`pip install biofasting[alignment]`) because parasail has no aarch64 wheel.
+`biofasting.arrow` adds the two tables (`read_fastq_table`,
+`read_fasta_table`): the same records, in `polars-bio`'s columns and in Arrow's
+own layout, built in one pass in C++ so that `pl.from_arrow` is a hand-off and
+not a conversion -- with pyarrow optional (`pip install biofasting[arrow]`),
+since only a caller who already has Arrow wants them.
+What the scaffold
 provides besides them is the ability to
 state exactly which build is running, which is the precondition for every
 performance claim the project intends to make.  A number without a build
@@ -23,7 +32,9 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _distribution_version
 
 from . import _core
+from .alignment import Alignment, Aligner
 from .annotations import AnnotationReference, read_annotations, to_reference
+from .arrow import read_fasta_table, read_fastq_table
 from .checksum import crc32, crc64, gcg, seguid
 from .fasta import FastaGrid, open_fasta, open_fasta_grid, read_fasta
 from .fastq import FastqGrid, open_fastq, open_fastq_grid, open_fastq_index, scan_fastq
@@ -69,6 +80,8 @@ from .sequtils import (
 
 __all__ = [
     "__version__",
+    "Alignment",
+    "Aligner",
     "AnnotationReference",
     "BiopythonWarning",
     "CodonAdaptationIndex",
@@ -106,6 +119,8 @@ __all__ = [
     "open_genbank",
     "read_annotations",
     "read_fasta",
+    "read_fasta_table",
+    "read_fastq_table",
     "read_features",
     "read_genbank",
     "reverse_complement",

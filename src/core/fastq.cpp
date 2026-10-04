@@ -363,4 +363,10 @@ std::string FastqIndex::sequence_slice(const FastqEntry& entry,
   return whole.substr(start, end - start);
 }
 
+std::string located_error(const FastqScanner& scanner) {
+  return scanner.error_message() + " (record " +
+         std::to_string(scanner.record_index()) + ", byte offset " +
+         std::to_string(scanner.error_offset()) + ")";
+}
+
 }  // namespace biofasting

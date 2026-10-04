@@ -49,6 +49,17 @@ struct FastaEntry {
   bool strided = false;          // the sequence is a regular grid of lines
 };
 
+// Appends one record's sequence to `out`: `entry.length` bytes, byte for byte
+// what SimpleFastaParser would build -- each line right-stripped, the lines
+// joined, and the spaces removed.
+//
+// It is free rather than a member of FastaIndex for one reason: the Arrow
+// column builder has to put the same bytes into a column's data buffer, and a
+// second implementation of the de-column-ing would be a second answer to what a
+// record's sequence is.  `data`/`size` are the span the entry was indexed over.
+void append_sequence(std::string& out, const char* data, std::size_t size,
+                     const FastaEntry& entry);
+
 class FastaIndex {
  public:
   // Builds the index.  Never throws: a duplicate key is reported through

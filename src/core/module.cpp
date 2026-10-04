@@ -16,6 +16,7 @@
 
 #include "biofasting/build_config.hpp"
 #include "annotations.hpp"
+#include "arrowout.hpp"
 #include "build_info.hpp"
 #include "cpu_features.hpp"
 #include "fasta.hpp"
@@ -100,7 +101,8 @@ class PyFastqScanner {
       case biofasting::FastqStatus::end:
         throw nb::stop_iteration();
       case biofasting::FastqStatus::error:
-        throw nb::value_error(located_error().c_str());
+        throw nb::value_error(
+            biofasting::located_error(scanner_).c_str());
     }
     return nb::make_tuple(
         nb::bytes(record.title.data(), record.title.size()),
@@ -148,15 +150,6 @@ class PyFastqScanner {
   explicit PyFastqScanner(biofasting::GzipBuffer&& inflated)
       : inflated_(std::move(inflated)),
         scanner_(inflated_.data(), inflated_.size()) {}
-
-  // Biopython's own wording, because the differential tests read it, plus the
-  // location -- which Biopython cannot give and a malformed file of a million
-  // records makes valuable.
-  std::string located_error() const {
-    return scanner_.error_message() + " (record " +
-           std::to_string(scanner_.record_index()) + ", byte offset " +
-           std::to_string(scanner_.error_offset()) + ")";
-  }
 
   BufferRef buffer_;
   biofasting::GzipBuffer inflated_;
@@ -267,6 +260,88 @@ class PyFastaIndex {
 
   BufferRef buffer_;
   biofasting::FastaIndex index_;
+};
+
+// The Python face of a built Arrow table.
+//
+// The one reader here that does *not* point into the caller's buffer, and the
+// difference is not incidental: a table cannot be a view of a FASTQ file,
+// because a column has to be contiguous and a file's records are not.  So the
+// build copies every byte once, into buffers this object owns, and what the
+// caller gets afterwards is a zero-copy view of *those*.  Keeping the table
+// alive is therefore what keeps the arrays alive, which is what the `owner`
+// argument on `buffers()` is for.
+//
+// The source buffer is not retained after the build, and must not be: nothing
+// here points into it.
+class PyArrowTable {
+ public:
+  explicit PyArrowTable(biofasting::ArrowTable table)
+      : table_(std::move(table)) {}
+
+  static PyArrowTable from_fastq(nb::handle source) {
+    BufferRef bytes(source);
+    return PyArrowTable(
+        checked(biofasting::fastq_table(bytes.data(), bytes.size())));
+  }
+
+  // The bytes are a whole gzip stream; they are inflated and the table is built
+  // from the result, which is then dropped.  Unlike the scanner there is no
+  // grid to keep the inflated buffer for, so nothing here outlives the call.
+  static PyArrowTable from_fastq_gzip(nb::handle source) {
+    BufferRef compressed(source);
+    biofasting::GzipBuffer inflated;
+    std::string error;
+    if (!biofasting::gunzip(compressed.data(), compressed.size(), inflated,
+                            error)) {
+      throw nb::value_error(error.c_str());
+    }
+    return PyArrowTable(
+        checked(biofasting::fastq_table(inflated.data(), inflated.size())));
+  }
+
+  static PyArrowTable from_fasta(nb::handle source) {
+    BufferRef bytes(source);
+    return PyArrowTable(
+        checked(biofasting::fasta_table(bytes.data(), bytes.size())));
+  }
+
+  nb::list names() const {
+    nb::list out;
+    for (const std::string& name : table_.column_names) {
+      out.append(nb::str(name.c_str(), name.size()));
+    }
+    return out;
+  }
+
+  std::size_t length() const noexcept { return table_.records; }
+  std::size_t column_count() const noexcept { return table_.columns.size(); }
+
+  // One `(offsets, data)` pair a column, both read-only views of this table's
+  // own bytes.  `owner` is the table, and it has to be: without it the arrays
+  // would outlive the buffers they read and numpy would have no way to know.
+  nb::list buffers(nb::handle owner) const {
+    using Offsets = nb::ndarray<nb::numpy, const std::uint64_t, nb::shape<-1>>;
+    using Bytes = nb::ndarray<nb::numpy, const std::uint8_t, nb::shape<-1>>;
+    nb::list out;
+    for (const biofasting::ArrowStringColumn& column : table_.columns) {
+      Offsets offsets(column.offsets(), {column.size() + 1}, owner);
+      Bytes data(column.data(), {column.bytes()}, owner);
+      out.append(nb::make_tuple(offsets, data));
+    }
+    return out;
+  }
+
+ private:
+  // The two failures a build can have are both the user's file, and both carry
+  // the message their reader would have raised: the FASTQ parser's with its
+  // location, the FASTA index's own.
+  static biofasting::ArrowTable checked(biofasting::ArrowTable table) {
+    if (table.failed) throw nb::value_error(table.error_message.c_str());
+    return table;
+  }
+
+  biofasting::ArrowTable table_;
 };
 
 // The canonical tuple spellings of the location kernel's structures.  Kept as
@@ -879,6 +954,52 @@ NB_MODULE(_core, m) {
           "difference is visible rather than assumed.  The array holds the "
           "index alive, and so the mapping with it.\n"
           "Raises ValueError if the record's lines are not a regular grid.");
+
+  nb::class_<PyArrowTable>(
+      m, "ArrowTable",
+      "A table of sequence records, built in Arrow's own layout.\n\n"
+      "The columns are polars-bio's, in its order -- FASTQ is (name, "
+      "description, sequence, quality) and FASTA is the same without quality -- "
+      "and the layout is what pyarrow expects to be handed: a column is n+1 "
+      "little-endian uint64 offsets and one buffer of concatenated bytes, "
+      "`large_string` rather than `string` because a few concatenated "
+      "chromosomes are past the 32-bit limit.\n\n"
+      "`description` is the title *after* the key and is **not** "
+      "SeqRecord.description, which is the whole title; a record with no "
+      "description gets \"\" and never a null.  See "
+      "biofasting.arrow.read_fastq_table for the full reading.\n\n"
+      "Build one with biofasting.arrow.read_fastq_table / read_fasta_table, or "
+      "call buffers() and hand the result to pyarrow.Array.from_buffers.  The "
+      "table owns its bytes: nothing here points into the file it was built "
+      "from, and the arrays from buffers() keep the table alive, not the file.")
+      .def_static("from_fastq", &PyArrowTable::from_fastq, "source"_a,
+                  "Build the FASTQ table from `source`, which must expose the "
+                  "buffer protocol.  Raises ValueError on a malformed record, "
+                  "with the parser's message and its location.")
+      .def_static("from_fastq_gzip", &PyArrowTable::from_fastq_gzip, "source"_a,
+                  "Inflate a whole gzip file from a buffer and build the FASTQ "
+                  "table from the result.  Raises ValueError if the bytes are "
+                  "not a valid gzip stream.")
+      .def_static("from_fasta", &PyArrowTable::from_fasta, "source"_a,
+                  "Build the FASTA table from `source`, which must expose the "
+                  "buffer protocol.  Raises ValueError on a duplicate key, "
+                  "with the reference's wording.")
+      .def_prop_ro("names", &PyArrowTable::names,
+                   "The column names, in table order.")
+      .def_prop_ro("length", &PyArrowTable::length, "The number of rows.")
+      .def_prop_ro("column_count", &PyArrowTable::column_count,
+                   "How many columns there are -- the length of names().")
+      .def(
+          "buffers",
+          [](nb::object self) {
+            return nb::cast<PyArrowTable&>(self).buffers(self);
+          },
+          "One (offsets, data) pair a column, in table order.\n\n"
+          "Both are read-only numpy arrays over this table's own bytes: "
+          "`offsets` is (length + 1,) uint64 and `data` is the concatenated "
+          "values.  That is exactly what pyarrow.Array.from_buffers takes, so "
+          "the hand-off copies nothing -- and both arrays hold the table alive, "
+          "which is what makes that safe.");
 
   nb::class_<PyFlatFileIndex>(
       m, "FlatFileIndex",

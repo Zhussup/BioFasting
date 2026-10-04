@@ -37,6 +37,27 @@ classifiers = [
 # API surface rather than of the import.
 dependencies = ["numpy>=1.22"]
 
+[project.optional-dependencies]
+# The pairwise aligner (biofasting.alignment) runs Biopython's scoring scheme on
+# parasail's SIMD kernels.  Optional, not required, for a packaging reason that
+# was checked rather than assumed: parasail 1.3.4 on PyPI ships six files --
+# manylinux_2_17 x86_64, macosx_10_9 x86_64, musllinux_1_1 i686, win32,
+# win_amd64 and the sdist -- and no aarch64 wheel of any kind, while
+# [tool.cibuildwheel] below builds an aarch64 wheel on Linux and on macos-14.  A
+# required dependency would turn every one of those jobs into a source build of
+# parasail.  The accelerator is therefore opt-in, and its measured 6x-35x is
+# honestly an x86-64 number.
+alignment = ["parasail>=1.3.4"]
+# The Arrow tables (biofasting.arrow) need pyarrow to hand their buffers to, and
+# nothing else here does: `read_fastq_table` builds Arrow's layout in C++ and
+# `Array.from_buffers` wraps it, so pyarrow is the reader of the result rather
+# than a dependency of the readers.  Optional for the same reason as alignment
+# but a different one: a wheel that required pyarrow would push an 40 MB
+# dependency on every caller who only ever wanted to parse a FASTQ file.  It is
+# not pinned to a version -- the buffers are a format, not an API, and pyarrow
+# has read this layout since 0.15.
+arrow = ["pyarrow>=15"]
+
 [project.urls]
 Repository = "https://github.com/Zhussup/BioFasting"
 

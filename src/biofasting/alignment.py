@@ -54,7 +54,19 @@ The contract, and its honest limit:
   claimed here.  `Alignment.counts().score` recomputes the path's score from
   the aligned letters and the matrix -- an independent implementation that must
   equal the kernel's own score -- and wherever the reference has exactly one
-  optimal alignment, this module's path equals it column for column.
+  optimal alignment, this module's path equals it column for column.  Measured
+  over 3,000 random pairs in all three schemes: our path always *is* one of the
+  reference's optima, and its `identities`/`mismatches`/`gaps` always equal that
+  optimum's.  That recomputation is a Python step per aligned letter, so it
+  happens the first time `counts()` is asked for and not when the alignment is
+  built: on a 150-base pair it is half of what `align` costs, and a caller who
+  asked for the path did not ask for it.
+* **A local alignment with nothing to align is the empty one, not nothing.**
+  When no pair of letters scores above zero the reference's `align` yields
+  *zero* alignments while its `score` still says 0.0; `sw` reports a zero-length
+  alignment instead, so this module returns an `Alignment` with empty gapped
+  strings, no coordinates and score 0 -- the same score, an explicit object
+  rather than an empty iterator.
 
 `parasail` is an **optional** dependency (`pip install biofasting[alignment]`)
 rather than a required one, for a measured packaging reason: parasail 1.3.4
@@ -190,11 +202,17 @@ def _as_text(value, what: str) -> str:
             f"{what} must be a str or a bytes-like object, not "
             f"{type(value).__name__}"
         )
-    if any(ord(character) > 0xFF for character in text):
+    # Encoded rather than scanned: `encode` is one C pass and raises on the
+    # first character it cannot carry, where a Python loop over every character
+    # would cost more than the kernel on a pair of real reads (measured: 15 us
+    # of the 25 us a 150x150 call took before this).
+    try:
+        text.encode("latin-1")
+    except UnicodeEncodeError:
         raise ValueError(
             f"{what} contains a character above U+00FF, which parasail's "
             "byte-indexed alphabets cannot address"
-        )
+        ) from None
     return text
 
 
@@ -210,25 +228,23 @@ def _one_byte(value, what: str) -> str:
     return value
 
 
-def _match_mismatch(first: str, second: str, match: int, mismatch: int):
-    """The reference's match/mismatch scheme, as an explicit table.
+def _alphabet(first: str, second: str) -> str:
+    """The letters the two sequences actually use, as a sorted alphabet.
 
-    The alphabet is the letters the two sequences actually use, and a letter
-    that is not the same character is a mismatch -- including a lower-case
-    letter against its upper-case twin, because that is what the reference
-    does (measured: ``align("acgt", "ACGT")`` with match 2 / mismatch -2 scores
-    -8, four mismatches, not four matches).
+    A match/mismatch scheme's alphabet is exactly this and no more, because a
+    letter the table does not have would be scored by parasail's unknown slot --
+    silently zero against everything.  A letter that is not the same character
+    is a mismatch, including a lower-case letter against its upper-case twin,
+    because that is what the reference does (measured: ``align("acgt", "ACGT")``
+    with match 2 / mismatch -2 scores -8, four mismatches, not four matches).
     """
-    alphabet = "".join(sorted(set(first) | set(second)))
-    letters = [_one_byte(letter, "the sequence") for letter in alphabet]
-    size = len(letters)
-    values = tuple(
-        match if i == j else mismatch for i in range(size) for j in range(size)
-    )
-    return alphabet, values, size
+    alphabet = "".join(sorted(set(first + second)))
+    for letter in alphabet:
+        _one_byte(letter, "the sequence")
+    return alphabet
 
 
-def _table(substitution_matrix, first: str, second: str):
+def _read_table(substitution_matrix):
     """A substitution matrix as an explicit table, refusing what it cannot give.
 
     The object must be an ``Array`` -- this package's or Biopython's, which are
@@ -236,6 +252,10 @@ def _table(substitution_matrix, first: str, second: str):
     own alphabet cannot say which letters are unknown, and an unknown letter is
     not a mismatch in this scheme: the reference raises for it, and parasail
     would quietly score it zero against everything.
+
+    Sequence-independent on purpose, so that it can run once in the constructor:
+    turning BLOSUM62 into 576 checked integers is 184 us of Python, which is six
+    times the kernel it feeds when it is done on every call.
     """
     alphabet = getattr(substitution_matrix, "alphabet", None)
     if alphabet is None or not hasattr(substitution_matrix, "shape"):
@@ -245,25 +265,60 @@ def _table(substitution_matrix, first: str, second: str):
         )
     if not isinstance(alphabet, str):
         alphabet = "".join(alphabet)
-    letters = [_one_byte(letter, "the substitution matrix's alphabet") for letter in alphabet]
-    size = len(letters)
+    for letter in alphabet:
+        _one_byte(letter, "the substitution matrix's alphabet")
+    size = len(alphabet)
     if tuple(substitution_matrix.shape) != (size, size):
         raise ValueError(
             f"the substitution matrix is {tuple(substitution_matrix.shape)} "
             f"for an alphabet of {size} letters"
         )
-    for sequence, what in ((first, "the first sequence"), (second, "the second sequence")):
-        for letter in sequence:
-            if letter not in alphabet:
-                raise ValueError(
-                    f"{what} contains letters not in the alphabet: {letter!r}"
-                )
+    flat = list(substitution_matrix.flat)
+    if len(flat) != size * size:
+        raise ValueError(
+            f"the substitution matrix has {len(flat)} values for an alphabet of "
+            f"{size} letters; expected {size * size}"
+        )
+    # Row-major over the alphabet, the same order `matrix.set_value(i, j, ...)`
+    # writes in `_matrix_for` -- one table, read twice, never two tables that
+    # happen to agree.  `_integer` does the conversion so that a fractional
+    # value is refused rather than truncated to an integer.
     values = tuple(
-        _integer(int(value), f"the substitution matrix's value for {letters[i]}/{letters[j]}")
-        for i in range(size)
-        for j in range(size)
+        _integer(value, f"the substitution matrix's value for index {index}")
+        for index, value in enumerate(flat)
     )
-    return alphabet, values, size
+    return alphabet, values, size, max(abs(value) for value in values)
+
+    if alphabet is None or not hasattr(substitution_matrix, "shape"):
+        raise TypeError(
+            "substitution_matrix must be an Array with an `alphabet` and a "
+            f"square shape, not {type(substitution_matrix).__name__}"
+        )
+    if not isinstance(alphabet, str):
+        alphabet = "".join(alphabet)
+    for letter in alphabet:
+        _one_byte(letter, "the substitution matrix's alphabet")
+    size = len(alphabet)
+    if tuple(substitution_matrix.shape) != (size, size):
+        raise ValueError(
+            f"the substitution matrix is {tuple(substitution_matrix.shape)} "
+            f"for an alphabet of {size} letters"
+        )
+    flat = list(substitution_matrix.flat)
+    if len(flat) != size * size:
+        raise ValueError(
+            f"the substitution matrix has {len(flat)} values for an alphabet of "
+            f"{size} letters; expected {size * size}"
+        )
+    # Row-major over the alphabet, the same order `matrix.set_value(i, j, ...)`
+    # writes in `_matrix_for` -- one table, read twice, never two tables that
+    # happen to agree.  `_integer` does the conversion so that a fractional
+    # value is refused rather than truncated to an integer.
+    values = tuple(
+        _integer(value, f"the substitution matrix's value at index {index}")
+        for index, value in enumerate(flat)
+    )
+    return alphabet, values, size, max(abs(value) for value in values)
 
 
 @lru_cache(maxsize=64)
@@ -374,7 +429,7 @@ def _decode(cigar_text: str, lengths: tuple, begins: tuple) -> list:
 
 def _walk(runs: list, first: str, second: str, begins: tuple, scheme: _Scheme,
           local: bool):
-    """One left-to-right pass: the two gapped strings, the coordinates, counts.
+    """One left-to-right pass: the two gapped strings, the coordinates, the gaps.
 
     A local alignment's optimal segment cannot begin or end with a gap -- a gap
     there would only lose score -- so the leading and trailing single-sequence
@@ -382,6 +437,11 @@ def _walk(runs: list, first: str, second: str, begins: tuple, scheme: _Scheme,
     and the reference's own local alignments drop them.  Trimming them is what
     makes ``align("TTTACGTACGTGGG", "ACGTACGT")`` come back as the eight
     aligned bases and not as fifteen columns.
+
+    The gap half of the counts is finished here, because a price depends on
+    whether a run is terminal and only this loop knows that; the other half is
+    over the *columns*, which is one Python step per aligned letter, so it lives
+    in `_count` and waits until `counts()` asks for it.
     """
     if local:
         while runs and runs[0][0] in "ID":
@@ -393,14 +453,12 @@ def _walk(runs: list, first: str, second: str, begins: tuple, scheme: _Scheme,
         while runs and runs[-1][0] in "ID":
             runs = runs[:-1]
 
-    index = scheme.index()
     positions = list(begins)
     coordinate_first: list = []
     coordinate_second: list = []
     gapped_first: list = []
     gapped_second: list = []
-    identities = mismatches = gaps = 0
-    substitution_score = gap_score = 0
+    gaps = gap_score = 0
 
     for number, (op, count) in enumerate(runs):
         terminal = number == 0 or number == len(runs) - 1
@@ -409,19 +467,8 @@ def _walk(runs: list, first: str, second: str, begins: tuple, scheme: _Scheme,
         coordinate_second += [positions[1], positions[1] + taken_second * count]
 
         if op in "=XM":
-            piece_first = first[positions[0]:positions[0] + count]
-            piece_second = second[positions[1]:positions[1] + count]
-            gapped_first.append(piece_first)
-            gapped_second.append(piece_second)
-            for letter_first, letter_second in zip(piece_first, piece_second):
-                if letter_first == letter_second:
-                    identities += 1
-                else:
-                    mismatches += 1
-                value = scheme.values[
-                    index[letter_first] * scheme.size + index[letter_second]
-                ]
-                substitution_score += value
+            gapped_first.append(first[positions[0]:positions[0] + count])
+            gapped_second.append(second[positions[1]:positions[1] + count])
         else:
             gaps += count
             gap_score -= (
@@ -438,7 +485,38 @@ def _walk(runs: list, first: str, second: str, begins: tuple, scheme: _Scheme,
         positions[0] += taken_first * count
         positions[1] += taken_second * count
 
-    counts = Counts(
+    return (
+        "".join(gapped_first),
+        "".join(gapped_second),
+        coordinate_first,
+        coordinate_second,
+        gaps,
+        gap_score,
+    )
+
+
+def _count(gapped_first: str, gapped_second: str, scheme: _Scheme, gaps: int,
+           gap_score: int) -> Counts:
+    """What the aligned columns contain, recomputed from the gapped pair.
+
+    One Python step per column, which is why it is the caller's choice and not
+    the alignment's: on a 150-base pair this is most of what `align` costs and
+    none of what it was asked for.  The gap half arrives already priced, because
+    only `_walk` knows which runs were terminal.
+    """
+    index = scheme.index()
+    size = scheme.size
+    values = scheme.values
+    identities = mismatches = substitution_score = 0
+    for letter_first, letter_second in zip(gapped_first, gapped_second):
+        if letter_first == "-" or letter_second == "-":
+            continue
+        if letter_first == letter_second:
+            identities += 1
+        else:
+            mismatches += 1
+        substitution_score += values[index[letter_first] * size + index[letter_second]]
+    return Counts(
         identities=identities,
         mismatches=mismatches,
         gaps=gaps,
@@ -446,12 +524,34 @@ def _walk(runs: list, first: str, second: str, begins: tuple, scheme: _Scheme,
         gap_score=gap_score,
         score=substitution_score + gap_score,
     )
-    return (
-        "".join(gapped_first),
-        "".join(gapped_second),
-        coordinate_first,
-        coordinate_second,
-        counts,
+
+
+def _no_column_alignment(first: str, second: str, scheme: _Scheme) -> Alignment:
+    """The alignment with no substitution column, built by hand.
+
+    With every end free and nothing worth substituting, the optimal alignment
+    is the whole of one sequence laid against the whole of the other -- an
+    insertion run next to a deletion run, so that *no* column pairs two
+    letters.  Measured: ``'AAAA'`` against ``'TTTT'`` scores 0 that way and -2
+    with any column, and parasail's own answer there is -2, because its `sg`
+    kernel cannot trace a path with no diagonal step at all.  The score is 0
+    either way once the ``max(·, 0)`` correction is applied, so this function
+    supplies the missing *path*.
+
+    A gap priced at zero is still a gap in the coordinates: the reference
+    reports this same alignment with coordinates ``[[0, n, n], [0, 0, m]]``,
+    which is what `_walk` builds from these two runs.  Both are terminal, so
+    both are priced at the (zero) end gap scores, and `_count` finds no column
+    with two letters in it -- the whole alignment through the ordinary path
+    instead of a second implementation of it.
+    """
+    gapped_first, gapped_second, coordinate_first, coordinate_second, gaps, gap_score = _walk(
+        [("I", len(first)), ("D", len(second))], first, second, (0, 0), scheme, local=False
+    )
+    return Alignment(
+        0, first, second, gapped_first, gapped_second,
+        coordinate_first, coordinate_second,
+        lambda: _count(gapped_first, gapped_second, scheme, gaps, gap_score),
     )
 
 
@@ -471,10 +571,10 @@ class Alignment:
     """
 
     __slots__ = ("_first", "_second", "_coordinate_first", "_coordinate_second",
-                 "_counts", "_gapped_first", "_gapped_second", "score")
+                 "_counts", "_counting", "_gapped_first", "_gapped_second", "score")
 
     def __init__(self, score, first, second, gapped_first, gapped_second,
-                 coordinate_first, coordinate_second, counts):
+                 coordinate_first, coordinate_second, counting):
         self.score = score
         self._first = first
         self._second = second
@@ -482,7 +582,9 @@ class Alignment:
         self._gapped_second = gapped_second
         self._coordinate_first = coordinate_first
         self._coordinate_second = coordinate_second
-        self._counts = counts
+        # Not the counts but how to get them: see `counts`.
+        self._counting = counting
+        self._counts = None
 
     @property
     def sequences(self) -> tuple:
@@ -517,8 +619,20 @@ class Alignment:
         )
 
     def counts(self) -> Counts:
-        """What the aligned columns contain, and what they are worth."""
-        return self._counts
+        """What the aligned columns contain, and what they are worth.
+
+        Computed the first time it is asked for and kept afterwards.  A caller
+        who wants the path pays for the path: the walk over the columns is one
+        Python step per aligned letter -- measured, 24 us of the 46 us a
+        150-base pair cost to align in `bench/bench_alignment.py` -- and it is
+        not what `align` was asked for.  When it *is* asked for, its ``score``
+        is the independent check that the path the kernel traced is the path its
+        own score describes.
+        """
+        counts = self._counts
+        if counts is None:
+            counts = self._counts = self._counting()
+        return counts
 
     def to_biopython(self):
         """Convert to ``Bio.Align.Alignment``, keeping the reference's surface.
@@ -557,6 +671,13 @@ class Aligner:
     defaults too.  What differs is what is *accepted*: see the module docstring
     for the end-gap rule, which is the one place where the reference expresses
     more than parasail can.
+
+    The scheme is a property of the aligner rather than of a call, so it is
+    validated and derived **once, here**, and a caller who gets a price wrong
+    hears about it at construction instead of on their first alignment.  It is
+    also what makes the wrapper fast enough to be worth having: done per call,
+    reading BLOSUM62 into a checked table costs 184 us of Python, six times the
+    kernel it feeds (measured, `bench/bench_alignment.py`, before and after).
     """
 
     def __init__(self, *, mode: str = "global", match_score=1.0, mismatch_score=0.0,
@@ -571,9 +692,27 @@ class Aligner:
         self.extend_end_gap_score = extend_end_gap_score
         self.substitution_matrix = substitution_matrix
 
-    # -- the scheme, validated and turned into a kernel choice -------------
+        (
+            self._prefix, self._open_gap, self._extend_gap, self._end_open, self._end_extend,
+        ) = self._validate()
+        if substitution_matrix is None:
+            self._table = None
+            self._letters = None
+            self._match = _integer(match_score, "match_score")
+            self._mismatch = _integer(mismatch_score, "mismatch_score")
+        else:
+            self._table = _read_table(substitution_matrix)
+            self._letters = frozenset(self._table[0])
+            self._match = self._mismatch = None
+        # Per instance, and keyed by the alphabet alone: the numbers are fixed
+        # by the constructor, so an alphabet is all a call needs to name its
+        # table, and a string hashes far faster than the tuple of values would.
+        self._tables: dict[str, tuple] = {}
+        self._matrices: dict[str, object] = {}
+        self._functions: dict[tuple, object] = {}
 
-    def _scheme(self, first: str, second: str) -> _Scheme:
+    def _validate(self):
+        """The mode and the four gap prices, as a kernel choice and magnitudes."""
         if self.mode not in _MODES:
             if self.mode == "fogsaa":
                 raise NotImplementedError(
@@ -594,47 +733,114 @@ class Aligner:
             # Local scores are insensitive to the end gap scores -- measured,
             # 0 of 63 pairs, for free, interior-priced and the reference's own
             # default -- so `sw` is the kernel whatever they say.
-            prefix, end_open, end_extend = "sw", open_gap, extend_gap
+            return "sw", open_gap, extend_gap, open_gap, extend_gap
+
+        end_open_score = _integer(self.end_gap_score, "end_gap_score")
+        end_extend_score = _integer(
+            self.extend_end_gap_score, "extend_end_gap_score"
+        )
+        end_open = _gap_cost(self.end_gap_score, "end_gap_score")
+        end_extend = _gap_cost(
+            self.extend_end_gap_score, "extend_end_gap_score"
+        )
+        if end_open_score == 0 and end_extend_score == 0:
+            prefix = "sg"
+        elif end_open_score == open_score and end_extend_score == extend_score:
+            prefix = "nw"
         else:
-            end_open_score = _integer(self.end_gap_score, "end_gap_score")
-            end_extend_score = _integer(
-                self.extend_end_gap_score, "extend_end_gap_score"
-            )
-            end_open = _gap_cost(self.end_gap_score, "end_gap_score")
-            end_extend = _gap_cost(
-                self.extend_end_gap_score, "extend_end_gap_score"
-            )
-            if end_open_score == 0 and end_extend_score == 0:
-                prefix = "sg"
-            elif end_open_score == open_score and end_extend_score == extend_score:
-                prefix = "nw"
-            else:
-                raise NotImplementedError(
-                    _END_GAP_REFUSAL.format(
-                        end_open=end_open_score, end_extend=end_extend_score,
-                        open=open_score, extend=extend_score,
-                    )
+            raise NotImplementedError(
+                _END_GAP_REFUSAL.format(
+                    end_open=end_open_score, end_extend=end_extend_score,
+                    open=open_score, extend=extend_score,
                 )
+            )
+        return prefix, open_gap, extend_gap, end_open, end_extend
 
-        if self.substitution_matrix is None:
-            match = _integer(self.match_score, "match_score")
-            mismatch = _integer(self.mismatch_score, "mismatch_score")
-            alphabet, values, size = _match_mismatch(first, second, match, mismatch)
+    def _match_table(self, alphabet: str):
+        """`(values, size, largest)` for a match/mismatch scheme, once per alphabet.
+
+        The same alphabet comes back for every pair of ordinary DNA reads, so
+        this is a dictionary hit on all but the first call.
+        """
+        table = self._tables.get(alphabet)
+        if table is None:
+            size = len(alphabet)
+            values = tuple(
+                self._match if i == j else self._mismatch
+                for i in range(size)
+                for j in range(size)
+            )
+            table = self._tables[alphabet] = (
+                values, size, max(abs(value) for value in values),
+            )
+        return table
+
+    # -- the scheme, and the two things a call needs from it ---------------
+
+    def _scheme(self, first: str, second: str) -> _Scheme:
+        """This pair's kernel, table and width.
+
+        The scheme's own half was settled in the constructor; what is left here
+        is the half that depends on the pair -- which letters the alphabet needs,
+        and how wide a register its score bound fits in.
+        """
+        if self._table is None:
+            alphabet = _alphabet(first, second)
+            values, size, largest = self._match_table(alphabet)
         else:
-            alphabet, values, size = _table(self.substitution_matrix, first, second)
+            alphabet, values, size, largest = self._table
+            letters = self._letters
+            for sequence, what in (
+                (first, "the first sequence"), (second, "the second sequence"),
+            ):
+                # One C-level pass first and the Python loop only if it found
+                # something: an unknown letter is an error, but checking for one
+                # letter by letter costs more than the kernel on a short pair.
+                unknown = set(sequence) - letters
+                if unknown:
+                    for letter in sequence:
+                        if letter in unknown:
+                            raise ValueError(
+                                f"{what} contains letters not in the alphabet: {letter!r}"
+                            )
 
-        largest = max(abs(value) for value in values)
         shortest = min(len(first), len(second))
         # An alignment has at most `shortest` columns, each worth at most the
         # matrix's largest value, and the widest gap it can pay for spans the
         # shorter sequence too.  Loose on purpose: one width too wide costs a
         # factor of two, one too narrow is a wrong answer.
-        bound = shortest * (largest + extend_gap) + open_gap
+        bound = shortest * (largest + self._extend_gap) + self._open_gap
         return _Scheme(
-            prefix=prefix, alphabet=alphabet, values=values, size=size,
-            open_gap=open_gap, extend_gap=extend_gap, end_open=end_open,
-            end_extend=end_extend, bits=_width_for(bound), free_ends=prefix == "sg",
+            prefix=self._prefix, alphabet=alphabet, values=values, size=size,
+            open_gap=self._open_gap, extend_gap=self._extend_gap,
+            end_open=self._end_open, end_extend=self._end_extend,
+            bits=_width_for(bound), free_ends=self._prefix == "sg",
         )
+
+    def _matrix(self, scheme: _Scheme):
+        """The parasail matrix for a scheme, built once per alphabet.
+
+        Keyed by the alphabet alone because the numbers are fixed by the
+        constructor, and memoized per instance so that a repeated alphabet does
+        not even hash the tuple of values.
+        """
+        matrix = self._matrices.get(scheme.alphabet)
+        if matrix is None:
+            matrix = self._matrices[scheme.alphabet] = _matrix_for(
+                scheme.alphabet, scheme.values
+            )
+        return matrix
+
+    def _function(self, scheme: _Scheme, trace: bool):
+        """The sized binding for a scheme and a trace, looked up once."""
+        key = (scheme.prefix, scheme.bits, trace)
+        function = self._functions.get(key)
+        if function is None:
+            kind = "trace_scan" if trace else "scan"
+            function = self._functions[key] = getattr(
+                _parasail(), f"{scheme.prefix}_{kind}_{scheme.bits}"
+            )
+        return function
 
     def _run(self, first, second, trace: bool):
         first = _as_text(first, "the first sequence")
@@ -644,12 +850,12 @@ class Aligner:
             # NULL result, which py-parasail turns into a ValueError; refusing
             # here gives the reference's message instead of that noise.
             raise ValueError("sequence has zero length")
-        parasail = _parasail()
+        # The scheme first, the accelerator second: a scheme this module refuses
+        # is refused for its own reason whether or not parasail happens to be
+        # installed, so a caller without the extra still gets the useful message.
         scheme = self._scheme(first, second)
-        matrix = _matrix_for(scheme.alphabet, scheme.values)
-        name = f"{scheme.prefix}_{'trace_scan' if trace else 'scan'}_{scheme.bits}"
-        result = getattr(parasail, name)(
-            first, second, scheme.open_gap, scheme.extend_gap, matrix
+        result = self._function(scheme, trace)(
+            first, second, scheme.open_gap, scheme.extend_gap, self._matrix(scheme)
         )
         if result.saturated:
             # Unreachable through this class -- the width comes from the score
@@ -697,14 +903,15 @@ class Aligner:
             (cigar.beg_query, cigar.beg_ref),
         )
         (
-            gapped_first, gapped_second, coordinate_first, coordinate_second, counts,
+            gapped_first, gapped_second, coordinate_first, coordinate_second, gaps, gap_score,
         ) = _walk(
             runs, first, second, (cigar.beg_query, cigar.beg_ref), scheme,
             local=self.mode == "local",
         )
         return Alignment(
             result.score, first, second, gapped_first, gapped_second,
-            coordinate_first, coordinate_second, counts,
+            coordinate_first, coordinate_second,
+            lambda: _count(gapped_first, gapped_second, scheme, gaps, gap_score),
         )
 
 
