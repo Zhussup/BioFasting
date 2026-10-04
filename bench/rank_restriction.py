@@ -80,6 +80,7 @@ import Bio.Restriction  # noqa: E402
 from Bio.Seq import Seq  # noqa: E402
 
 import biofasting.restriction as ours_restriction  # noqa: E402
+from biofasting._restriction_sites import compsite  # noqa: E402
 
 REPEATS = 7
 
@@ -167,24 +168,40 @@ def biofasting(text: str, seq: Seq, enzymes: tuple[str, ...], kind: str):
     return tuple(sorted(v for positions in batch.search(text).values() for v in positions))
 
 
+_PATTERNS: dict[str, str] = {}
+
+
+def pattern_of(name: str) -> str:
+    """The enzyme's search pattern, built once and reused.
+
+    Outside the clock, which is what the `regex` column means by "the search
+    step and nothing else": `compsite` costs 1.08 us a build, two hundredths of
+    a percent of the row it feeds, but a column that built twenty patterns per
+    call would be measuring `str.join` beside its scan.
+    """
+    got = _PATTERNS.get(name)
+    if got is None:
+        enzyme = getattr(ours_restriction, name)
+        got = compsite(enzyme.site, enzyme.is_palindromic())
+        _PATTERNS[name] = got
+    return got
+
+
 def regex_floor(text: str, seq: Seq, enzymes: tuple[str, ...], kind: str) -> int | None:
     """The shared search step and nothing else: `re.finditer`, counted.
 
-    The pattern comes from this package's own site-to-regex function rather than
-    from the reference's compiled `Enzyme.compsite`, so that the column is one
-    pattern builder plus one `re` scan and not a second port of the pattern
-    derivation -- but the builder is *not* inside the timer, which is the whole
-    point of the column: it is what a kernel would replace, and it is measured
-    separately in the attribution section.
+    The pattern comes from this package's own site-to-regex function rather
+    than from the reference's compiled `Enzyme.compsite`, so that the column is
+    one pattern builder plus one `re` scan and not a second port of the pattern
+    derivation -- and the builder is outside the clock, via `pattern_of`, which
+    is the whole point of the column: it is what a kernel would replace, and
+    the builder it would not carry is measured separately, in `attribution`.
     """
-    from biofasting._restriction_sites import compsite
-
     if kind == "catalyze":
         return None
     total = 0
     for name in enzymes:
-        enzyme = getattr(ours_restriction, name)
-        total += sum(1 for _ in re.finditer(compsite(enzyme.site, enzyme.is_palindromic()), text))
+        total += sum(1 for _ in re.finditer(pattern_of(name), text))
     return total
 
 
@@ -260,8 +277,6 @@ def attribution(text: str, seq: Seq, repeats: int) -> None:
     decides whether a kernel would pay, because `regex` is what a kernel replaces
     and `FormattedSeq` is what it deletes.
     """
-    from biofasting._restriction_sites import compsite
-
     enzyme = Bio.Restriction.EcoRI
     pattern = compsite(ours_restriction.EcoRI.site, True)
     formatted = timed(lambda: Bio.Restriction.Restriction.FormattedSeq(seq), repeats)

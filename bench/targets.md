@@ -1862,3 +1862,158 @@ no description is `""` here and a null there, and a header beginning `>  rec5`
 is read here where `polars-bio` refuses the whole file.  The second is the
 stronger of the two: a library that cannot open a file Biopython opens is a
 regression whatever it is compatible with.
+
+**NO COMMITS AND NO PUSHES.**  This section is written by the agent; the owner
+commits and pushes.
+
+## Phase 2 ranking, tenth pass: the restriction engine (2026-10-04)
+
+The triage filed the whole restriction module as `parity` on the assumption
+that a digest is not a hot path, and that assumption had already been wrong
+about the writers, so this pass asks the question with a timer instead of with
+an assumption.  Its *premise*, checked before it could rank anything: both
+implementations search with `re.finditer` over a prepared string — the
+reference's `FormattedSeq.finditer` and this package's are the same three
+lines — so a port cannot be faster at the search itself, and everything the
+port could win sits around it: preparation (`Seq` → `bytes` translate →
+IUPAC validation → `decode`, the whole molecule per call) and bookkeeping
+(`_modify`/`_rev_modify`/`_drop` per match).
+
+So `bench/rank_restriction.py` (the pass's file) carries four columns that are
+not four implementations of the same thing: `reference` (the whole call from
+the `Seq` the reference requires), `ours` (the same call through this
+package, from the `str` it takes without conversion), `regex` (the shared
+search step alone, counted — the reference's own scan with the preparation
+and the bookkeeping removed) and `literal` (a `str.find` loop, which is
+`memchr` inside CPython, for sites with no IUPAC degeneracy — the floor a
+kernel could reach, printed `-` where a site has `N` in it).  One enzyme has
+`N`, so its literal column is absent rather than fake: a floor above the
+thing it bounds is not a floor.
+
+**The gate.**  `ours`'s cut positions against the reference's on every row —
+every fragment, on the `catalyze` row — and then the two floors against
+*each other*: two independent scanners of the same bytes agreeing is what
+says the overlap rule and the second strand were both read.  The floors
+count matches while the references produce cut positions — a cut that falls
+off a linear molecule is dropped — so the two kinds of answer are never
+compared to each other, only among themselves.  One more gate, worth
+recording because it is the reason the pass can rank at all:
+`RestrictionBatch.search` caches its mapping on the batch in **both**
+libraries, so every timed call builds its own batch — a reused batch measures
+a `str(dna)` conversion, the same mistake the ProtParam pass recorded for
+`ProteinAnalysis.count_amino_acids`.
+
+**The numbers**, median of nine after warm-up and a further run after
+cross-checking (see the caveat):
+
+| row | sites | reference | ours | regex floor | literal floor | vs regex | vs reference |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `eco-1mb` | 284 | 18,689 µs | 20,275 µs | 16,850 µs | 2,724 µs | 0.83× | 0.92× |
+| `sau3ai-1mb` | 3,865 | 21,043 µs | 21,605 µs | 17,120 µs | 5,082 µs | 0.79× | 0.97× |
+| `bstxi-1mb` (an `N`-site) | 190 | 17,378 µs | 17,402 µs | 14,418 µs | - | 0.83× | 1.00× |
+| `batch-20-1mb` | 4,305 | 325,149 µs | 329,696 µs | 326,057 µs | 70,685 µs | 0.99× | 0.99× |
+| `catalyze-eco-1mb` | 284 | 18,575 µs | 18,461 µs | - | - | - | 1.01× |
+
+and the attribution, EcoRI on the 1 Mbp contig (`bench/rank_restriction.py`
+prints it as a section):
+
+| measurement | µs | share |
+|---|---:|---|
+| `re.finditer`, one pass over the contig | 16,243 | **89% of the whole call** |
+| `FormattedSeq(Seq)` — the reference's preparation | 1,293 | 7% |
+| reference `search`, whole | 18,233 | |
+| this package, whole | 18,240 | |
+| `str.find` loop over the contig | 2,724 | 6.0× below the scan |
+
+**What it found.**  The premise held to the microsecond on a settled machine:
+the two wholes are 18,233 and 18,240 µs — equal, not 0.92× — and 89% of both
+is the shared `re` scan.  The reference's famous preparation is 1.3 ms of an
+18 ms call, not the reason it is slow.  And the `literal` floor says the scan
+itself is 6.0× above what `memchr` does with the same bytes on the same
+machine — 16–17 ms of scan against 2.7 ms, on `genome_1mb.fasta`, the
+very row the FASTA and Arrow passes read.  A
+kernel that scans with `memmem` instead of a regex engine would take a
+single-enzyme digest from ~18 ms to ~3 ms (including the bookkeeping, which
+is under 0.3 ms even in Python) and a twenty-enzyme batch from ~325 ms to
+~55 ms: **about 6×, on the one stage both libraries already know they share.**
+Sites with IUPAC degeneracy keep the regex — `BstXI`'s `CCANNNNNNTGG` has no
+literal floor and would keep one — so this is a literal-path-in-C++ proposal,
+not a rewrite of the engine.
+
+**The caveat, stated because it matters today.**  The first two runs of this
+pass were taken while the machine was still recovering from a memory event
+(see the run notes: an editing mistake made a measurement script allocate
+without bound, the kernel killed it, and the system was briefly under swap
+pressure).  Under that pressure the reference printed 15.7–20.3 ms across
+runs and `ours` 17.3–24.7 ms, including one run where `ours` printed **less**
+than the scan floor can be — impossible for a settled host, and the clearest
+sign the numbers were not settled.  The numbers quoted above are from the
+run after the pressure cleared, with the attribution's equality
+(18,233 vs 18,240) as the check that it had.  Ratios quoted across runs of
+this pass before that run are not quoted at all.
+
+## Phase 2 ranking, eleventh pass: CAI (2026-10-04)
+
+The runner's `cai-calculate` row asserts this package's `calculate` is 1.0×
+the reference's.  That is true and it is why `bench/rank_cai.py` does not
+start where a ranking pass usually starts: both `calculate` functions are
+literal translations of the same Biopython loop, and both pay the same
+per-codon costs.  The pass decomposes those costs with two *derived* floors —
+the same CAI value by the same rules, stripped of everything a C++ walk would
+not need: `slice-walk` (the loop's own shape without the `SeqRecord` branch,
+the `upper()`, the try/except, the two-element membership lists — all folded
+into a precomputed `log(w)` table carrying `None` for ATG and TGG, whose
+skipping takes them out of the length divisor) and `tuple-walk` (the same
+table keyed by three-character tuples, `zip` over the three strides, no
+per-codon string built at all).  `count_kmers`, which the kernel has, is
+**not** a floor for this and the pass says so in its docstring: it counts
+overlapping k-mers with no stride, and CAI reads codons with a stride of
+three — a CAI kernel would be new code, and the pass measures whether new
+code is worth.
+
+**The gate, and what it caught twice before the table existed.**  Both
+floors return the CAI value, so the gate compares floats — and compares them
+**exactly**, because every producer walks the same codons in the same order
+and adds the same `log(w)` terms in the same order: a bitwise difference is
+a rule difference, and no tolerance is needed to say so.  It caught (1) the
+first draft reading the contig without cutting it to a whole codon —
+`ValueError: illegal codon 'T'`, the one-base tail of a 1,000,000-bp
+sequence, *before* any N question arises; and (2) the first draft building
+its weight table once from the reads-10k index and reading it on the contig
+row, where the floors came out a third of a percent from the reference's
+value — a caught mistake, not a tolerance question.  (The N contract itself
+is a test, not a gate: both libraries refuse N the same way, pinned by
+`test_codon_adaptation_index_calculate_rejects_an_illegal_codon`.)
+
+**The numbers**, median of seven:
+
+| row | items | codons | reference | ours | slice-walk | tuple-walk | ours vs reference |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `calc-genes-10k` | 10,000 | 500,000 | 0.131 | 0.130 | 0.075 | 0.070 | 1.01× |
+| `calc-1m` | 1 | 333,333 | 0.127 | 0.124 | 0.081 | 0.066 | 1.02× |
+| `index-1m` (the build, one table) | 1 | 333,333 | 32,728 µs | 32,541 µs | - | - | 1.01× |
+
+Units are µs a codon for both calc rows and µs a build for the last, printed
+per row under the table by the pass itself.
+
+**What it found.**  `ours` is 1.01–1.02× — the port is the reference, and
+both pay the same loop.  The floors say the loop's own shape costs about
+**1.7–1.9× more than the same walk with the loop's conveniences removed**
+(0.127 → 0.066–0.081 µs a codon): a Python cleanup, not a kernel question,
+because the remaining half of the cost is the per-codon dict lookup and the
+`log()`, and a C++ codon scan removes all of it — but the *deliverable* CAI
+is not a hot path: ~6.5 µs on a 150-base gene, ~33 ms on a whole megabase,
+called per gene and not per megabase.  So the recommendation this pass
+carries to the owner is: **CAI is not kernel material** — take the Python
+cleanup (fold the skip rules into a precomputed table, as both floors do)
+if the number ever matters, and leave the kernel for the restriction scan,
+where the sixfold lives.
+
+**What is deliberately not claimed.**  The two floors are derived from this
+package's index, not independent CAI implementations — the gate can only say
+they follow the reference's rules on this substrate, not that they are
+another way to compute CAI.  The `index-1m` row times a *build from a
+1 Mbp sequence*: nobody builds a codon table that way in practice, it is
+here because the build is the other half of the API and the runner's row
+never timed it.  And the pass measures one build kernel, at one repeat
+count, on one host — the same caveats the tenth pass carries.
