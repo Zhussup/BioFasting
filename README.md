@@ -287,6 +287,24 @@ are `parity`, measured and deferred — a byte-identical GenBank record means
 writing the annotations dict and the FEATURES table, which this package only
 reads.
 
+## Docs
+
+The package's *how to use it* documentation lives in
+[`docs/`](docs/index.md) — six English tutorials (quickstart, parsing,
+flat files, restriction, protein, alignment) plus the maps that say what is
+refused as documentation and where every measured number lives.  The
+runnable half of the tutorials is [`examples/`](examples/): six pipeline
+scripts (QC filtering, a plasmid digest, a protein profile with windows,
+codon adaptation, primer scoring, the polars hand-off), each printing what
+[`tests/test_examples.py`](tests/test_examples.py) asserts, so the docs
+cannot drift without a red test.  Speed facts in the tutorials are cited to
+[`bench/targets.md`](bench/targets.md), never re-quoted as tables; the API
+reference is the docstrings themselves, exercised by the tests — no
+generated site is kept.
+
+**NO COMMITS AND NO PUSHES.** This section is written by the agent; the
+owner commits and pushes.
+
 ## Principles
 
 1. **Benchmark first.** No code until a bench harness ranks workloads by
@@ -349,7 +367,7 @@ src/
     _translate.py             # translation: the reference's rules, and a kernel
     sequtils.py               # the half of Bio.SeqUtils that measures: GC123, GC_skew,
                               #   molecular_weight, seq1/seq3, nt_search, CAI
-    protparam.py              # ProteinAnalysis: the eleven measurements
+    protparam.py              # ProteinAnalysis: the twelve measurements
     protparam_data.py         # `Bio.SeqUtils.ProtParamData`: the scales, as it exposes them
     _protparam_data.py        # generated: 32 tables, every letter aligned to AMINO_ACIDS
     _iupac_data.py            # generated: the IUPAC tables sequtils and checksum need
@@ -390,6 +408,21 @@ src/
     write.{hpp,cpp}           # FASTA / FASTQ / QUAL writers: one buffer, one crossing
     build_config.hpp.in       # template CMake fills in with the build identity
 tests/                        # pytest suite; scaffold invariants + the kernels
+docs/                         # the tutorials (see README's Docs section)
+  index.md                    # the map: what each tutorial covers, what is refused
+  tutorial_quickstart.md      # install, build identity, the first reads and writes
+  tutorial_parsing.md         # FASTQ/FASTA in depth: iteration, indexes, grids, tables
+  tutorial_flatfiles.md       # GenBank/EMBL/SwissProt, the FEATURES table, annotations
+  tutorial_restriction.md     # enzymes, the search contract, batches, the reports
+  tutorial_protein.md         # sequtils, ProteinAnalysis, IsoelectricPoint
+  tutorial_alignment.md       # Aligner / Alignment / Counts, the parasail extra
+examples/                     # six runnable pipelines quoted by the tutorials
+  fastq_qc.py                 # read, measure, filter, write, report (the flagship)
+  plasmid_digest.py           # a batch of cutters against a circular molecule
+  protein_profile.py          # the whole calculator over one protein, plus windows
+  gene_cai.py                 # codon adaptation: index, score, rank, report
+  primer_score.py             # candidates ranked by local alignment, binding shown
+  reads_to_polars.py          # the Arrow table handed to polars, aggregated
 third_party/
   libdeflate/                 # vendored release 1.23 + why, what, how to bump it
     lib/                      #   the library: 11 C sources and their headers
