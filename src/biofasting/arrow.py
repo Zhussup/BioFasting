@@ -13,11 +13,18 @@ its columns, in its order, and the table is built in one pass in C++ into the
 buffers Arrow itself would have used.
 
 What comes back is a real ``pyarrow.Table``: ``pl.from_arrow(table)`` is the
-documented hand-off and copies nothing, ``to_pandas()`` and ``to_polars()`` are
-one call away, and every value in it is byte for byte what the readers yield --
-the differential tests compare the table against ``SeqIO.parse`` rather than
-against a fixture, and the benchmark gates it against four independent
-producers.
+documented hand-off, ``to_pandas()`` and ``to_polars()`` are one call away, and
+every value in it is byte for byte what the readers yield -- the differential
+tests compare the table against ``SeqIO.parse`` rather than against a fixture,
+and the benchmark gates it against four independent producers.
+
+**The hand-off is cheap but it is not free**, and the measurement that says so is
+in ``bench/targets.md``.  ``pl.from_arrow`` does not copy the *strings* -- the
+frame keeps the table's bytes alive after the table object is gone, which is what
+building Arrow's own layout buys -- but polars 1.44 does not adopt an Arrow string
+column as it stands either: it indexes it, which is O(rows) at 32-38 ns a record
+on the million-read corpus.  A caller who never leaves ``pyarrow`` does not pay
+that, and a caller who wants a frame pays it once per frame and not per column.
 
 **The reading of the columns.**  ``name`` is the record's key, the title's first
 word, exactly as ``SeqIO.index`` keys it and as this package's own indexes key
@@ -146,7 +153,8 @@ def read_fastq_table(path):
     one pass.
 
     The table owns its bytes, so it does not hold the file mapped and can
-    outlive it; ``pl.from_arrow(table)`` is a zero-copy hand-off to polars.
+    outlive it; ``pl.from_arrow(table)`` hands them to polars without copying
+    them (see the module docstring for what that call does cost).
     """
     data = map_readonly(path)
     if data[:2] == _GZIP_MAGIC:

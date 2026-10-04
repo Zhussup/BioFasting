@@ -19,8 +19,11 @@ way) but **is it the same table**, and the two things that word covers here:
 
 The edge cases are all from the reference's own behaviour rather than from the
 tables' documentation, and the two divergences from `polars-bio` are pinned by
-name in the last section -- a deliberate difference that is not tested is a bug
-with a story.
+name in a section of their own -- a deliberate difference that is not tested is
+a bug with a story.  That section also builds `polars-bio`'s own table on the
+same file and compares them, because "compatible with `polars-bio`" is a claim
+about a second library and a test of it that never imports that library would be
+a test of this one's opinion of it.
 """
 
 import gzip
@@ -252,8 +255,14 @@ def test_the_table_owns_its_bytes(tmp_path):
     assert table.column("quality").to_pylist() == ["IIIIIIII"]
 
 
-def test_polars_takes_the_table_without_a_copy():
-    """`pl.from_arrow` is the documented hand-off, and it is free.
+def test_polars_takes_the_table_without_copying_the_strings():
+    """`pl.from_arrow` is the documented hand-off, and the bytes are not copied.
+
+    Not "and it is free": polars 1.44 indexes an Arrow string column rather than
+    adopting it, which is 32-38 ns a record (measured in `bench/bench_arrow.py`).
+    What is pinned here is the part that matters to the layout -- the frame reads
+    correctly after the table object is gone, so the bytes it is reading are the
+    ones this package built and not the table wrapper's.
 
     Skipped rather than required: polars is not a dependency of anything here.
     """
@@ -261,10 +270,17 @@ def test_polars_takes_the_table_without_a_copy():
     path = DATA / "fastq" / "reads_10k.fastq"
     if not path.exists():
         pytest.skip("benchmark corpus not generated")
+    import gc
+
     table = read_fastq_table(str(path))
     frame = polars.from_arrow(table)
+    del table
+    gc.collect()
     assert frame.columns == FASTQ_COLUMNS
     assert frame.height == 10_000
+    assert frame["name"][-1] == "SRR000001.9999"
+    assert len(frame["sequence"][0]) == 150
+    assert len(frame["quality"][0]) == 150
 
 
 # --------------------------------------------------------------------------
@@ -413,6 +429,90 @@ def test_an_empty_file_is_an_empty_table(tmp_path):
     assert table.num_rows == 0
     assert table.column_names == FASTQ_COLUMNS
     assert table.column("sequence").to_pylist() == []
+
+
+# --------------------------------------------------------------------------
+# The compatibility story, against the library it is a story about.
+# --------------------------------------------------------------------------
+
+
+needs_polars_bio = pytest.mark.skipif(
+    importlib.util.find_spec("polars_bio") is None,
+    reason="polars-bio is not installed; it is the compatibility target, not a dependency",
+)
+
+
+@needs_corpus
+@needs_polars_bio
+def test_the_columns_are_the_ones_polars_bio_builds():
+    """Both libraries' tables, on the same file, column by column.
+
+    This is the claim PLAN 2.3 is about -- a frame moved from one library to the
+    other must not have to be rewritten -- and the only honest way to test it is
+    to build both and compare, because the columns are the contract and a
+    contract tested against a fixture is a contract tested against its author.
+
+    Two differences are known, named in `biofasting.arrow`'s module docstring,
+    and normalised here rather than in the library.  The FASTQ quality column is
+    `quality_scores` there, and a record with no description is a **null** there
+    and `""` here.  Neither is corrected in either direction: the first would
+    break this package's own naming, the second would put the only null in a
+    package that has none.  The null is filled here so that the rest of the
+    comparison can be strict, and it is asserted as a divergence of its own
+    below, so that this fill cannot be mistaken for agreement.
+    """
+    import polars_bio as pb
+
+    fastq = str(DATA / "fastq" / "reads_10k.fastq")
+    theirs = pb.read_fastq(fastq).rename({"quality_scores": "quality"})
+    ours = read_fastq_table(fastq)
+    assert ours.column_names == theirs.columns
+    for name in ours.column_names:
+        assert ours.column(name).to_pylist() == theirs[name].fill_null("").to_list()
+
+    fasta = str(DATA / "fasta" / "genome_1mb.fasta")
+    theirs = pb.read_fasta(fasta)
+    ours = read_fasta_table(fasta)
+    assert ours.column_names == theirs.columns
+    for name in ours.column_names:
+        assert ours.column(name).to_pylist() == theirs[name].fill_null("").to_list()
+
+
+@needs_polars_bio
+def test_a_header_with_no_description_is_empty_here_and_null_there(tmp_path):
+    """The divergence, pinned by name, so that it is a contract and not a bug.
+
+    A length-zero value and the absence of a value are different things, and a
+    caller who moves a frame across libraries meets the difference here first.
+    """
+    import polars_bio as pb
+
+    path = write(tmp_path, "a.fasta", ">rec4\nACGT\n")
+    assert pb.read_fasta(str(path))["description"].to_list() == [None]
+    table = read_fasta_table(str(path))
+    assert table.column("description").to_pylist() == [""]
+    assert table.column("description").null_count == 0
+
+
+@needs_polars_bio
+def test_a_leading_space_is_read_here_where_polars_bio_refuses_the_file(tmp_path):
+    """The second divergence, and the reason it is deliberate.
+
+    `polars-bio` refuses the whole file with `FASTA read error: missing name`;
+    the reference reads the record and keys it `rec5`.  A library that cannot
+    open a file Biopython opens is a regression whatever it is compatible with,
+    so this one is a copy of the reference's behaviour and not a departure from
+    it.
+    """
+    import polars.exceptions
+    import polars_bio as pb
+
+    path = write(tmp_path, "a.fasta", ">  rec5 leading\nACGT\n")
+    with pytest.raises(polars.exceptions.ComputeError, match="missing name"):
+        pb.read_fasta(str(path))
+    table = read_fasta_table(str(path))
+    assert table.column("name").to_pylist() == ["rec5"]
+    assert table.column("description").to_pylist() == ["leading"]
 
 
 # --------------------------------------------------------------------------

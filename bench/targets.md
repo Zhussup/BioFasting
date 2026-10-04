@@ -1765,3 +1765,100 @@ rounding difference.  The pass normalises it to compare and says so.
 has been delivered.  `pyarrow`, `polars` and `polars-bio` are benchmark
 dependencies and are not runtime dependencies of the package — the Arrow path
 is to be optional, like the aligner, and for the same kind of reason.
+
+## Delivered result: the Arrow tables (M25, PLAN 2.3, 2026-10-04)
+
+**NO COMMITS AND NO PUSHES.**  This section is written by the agent; the owner
+commits and pushes.
+
+The ninth pass above measured the target and named the gap: the *reader* was
+already ahead of `polars-bio` on three rows of five, so what was missing was the
+**building** — one Python call per record to assemble the columns.  This is the
+answer, measured on the same five rows, by the same producers, under the same
+gate, and against the same prediction (0.3–0.5 µs a read on the plain million).
+
+`bench/bench_arrow.py` imports the ranking pass's own producers rather than
+copying them, so the two tables differ only by the delivered column.  **Every
+producer's table is compared against the reference's before a single time is
+taken** — column by column and value by value — and this package's against
+`polars-bio`'s as well: **25 of 25 comparisons equal** on the run below.  Median
+of five on every row, including the two 100 MB ones, after warm-up.
+
+| row | records | MB | reference | `polars-bio` | pure-Python | **ours** | + polars | vs `polars-bio` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `fastq-10k` | 10,000 | 3.7 | 14.417 µs/rec | 1.566 | 1.200 | **0.219** | 0.251 | 7.16× |
+| `fastq-gz-1m` | 1,000,000 | 171.6 | 19.154 µs/rec | 5.114 | 4.339 | **1.414** | 1.473 | 3.62× |
+| `fastq-1m` | 1,000,000 | 369.3 | 15.652 µs/rec | 1.043 | 1.894 | **0.304** | 0.348 | 3.43× |
+| `fasta-1mb` | 1 | 1.0 | 283 MB/s | 97 MB/s | 293 MB/s | **942 MB/s** | 716 MB/s | 9.71× |
+| `fasta-100mb` | 5 | 101.7 | 170 MB/s | 323 MB/s | 234 MB/s | **1002 MB/s** | 1005 MB/s | 3.10× |
+
+**The prediction held, and it held at the top of its own range.**  0.304 µs a
+read on `fastq-1m` is inside the 0.3–0.5 the ninth pass predicted from the
+scanner's 0.226 µs a read plus ~320 bytes of payload, and it is **3.43×
+`polars-bio`** — the Rust reader that was the tool to beat — where the *same
+reader* with the table built in Python was 1.695 µs and lost the row.  On the
+gzipped million, 1.414 against `polars-bio`'s 5.114 is **3.62×**, and the FASTA
+rows are ~1 GB/s, 9.7× and 3.1× the competitor's.  The 100 MB row is the one
+place `polars-bio` is close (323 MB/s against 1002), and it is the row where a
+straight `memcpy` of the file is thousands of MB/s, so the number that matters
+there is this package's, not the ratio.
+
+**Run-to-run stability.**  Three consecutive full runs of the same script, same
+host: ours 0.231 / 0.226 / 0.219 µs a read on `fastq-10k`, 1.387 / 1.396 / 1.414
+on `fastq-gz-1m`, 0.303 / 0.295 / 0.304 on `fastq-1m`, 941 / 994 / 942 MB/s and
+1005 / 1031 / 1002 MB/s on the two FASTA rows.  The delivered column moves by
+under 3% between runs; the competitor's moves by up to 12% (`polars-bio` on
+`fastq-1m`: 1.000 / 0.920 / 1.043), which is why the ratio column is quoted to
+two digits and not three.
+
+**The one thing that is not free, and it was not in the plan.**  The table is
+built in C++ into Arrow's own buffers and `Array.from_buffers` wraps them, so
+there is no copy between the kernel and `pyarrow` — the differential tests check
+that on buffer *addresses*, not by asserting it.  What the pass then found by
+timing the hand-off on a table already in hand is that `pl.from_arrow` **does not
+copy the strings either, but it is not O(1)**:
+
+| row | `pl.from_arrow` | as a share of the delivered call | per row |
+|---|---:|---:|---:|
+| `fastq-10k` | 289.2 µs | 13.23% | 28.9 ns |
+| `fastq-gz-1m` | 32.2 ms | 2.28% | 32.2 ns |
+| `fastq-1m` | 51.2 ms | 16.85% | 51.2 ns |
+| `fasta-1mb` | 283.8 µs | 26.30% | (1 record) |
+| `fasta-100mb` | 26.5 µs | 0.03% | (5 records) |
+
+The bytes are not copied, and that was measured rather than assumed: RSS goes up
+by 70 MB when a 394 MB table becomes a frame, and dropping the *table* afterwards
+frees nothing while dropping the frame frees 379 MB.  Polars 1.44 keeps the
+adopted buffers and builds its own per-string index over them, which is O(rows):
+timed on three slices of one table — 10k, 100k and 1M rows — the cost is linear in
+rows and not in bytes, 28–51 ns a record across runs.  So a caller who never
+leaves `pyarrow` pays nothing, and a caller who wants a frame pays that once per
+frame.  It is recorded here because the docstrings used to claim the hand-off
+was free, and a claim that is nearly true is the kind that survives review.
+
+**Two measurement traps this pass hit, both of which moved a number.**
+
+* **Median of three is not a median on a row that allocates hundreds of
+  megabytes.**  The first version of the benchmark inherited `rank_arrow.py`'s
+  per-row repeat counts (three on the two large rows) and reported the *same*
+  call — `read_fastq_table` on the plain million — at 0.319 µs/rec in the table
+  and 0.582 µs/rec in a later section of the same run.  Five repeats across three
+  rounds gave 0.330 / 0.352 / 0.336.  Every row now uses one repeat count.
+* **A difference of two medians is not a measurement when the noise is larger
+  than the quantity.**  The hand-off was first reported as
+  `delivered_to_polars - delivered`, which printed **negative** numbers — −0.0681
+  µs a record, −18.16 ms on a 131.3 ms call.  It is now timed directly, on a table
+  that is already built, which is the only way the sentence "the hand-off costs
+  X" can be supported.
+
+**What is deliberately not claimed.**  These are local-file numbers on an
+x86-64 laptop, single-threaded, with no chunking, no streaming and no object
+storage; `polars-bio`'s FASTA path is slower here *because* it is built for S3,
+and this package does not compete with that.  There is no polars IO source, no
+DataFusion provider and no `write_fastq(table)`: the deliverable is four columns
+a caller can hand over, and a caller who wants a plugin wants `polars-bio`.
+Two divergences from it are deliberate and pinned by a test each — a record with
+no description is `""` here and a null there, and a header beginning `>  rec5`
+is read here where `polars-bio` refuses the whole file.  The second is the
+stronger of the two: a library that cannot open a file Biopython opens is a
+regression whatever it is compatible with.

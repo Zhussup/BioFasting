@@ -201,6 +201,23 @@ gitignored and disposable, a cache, never a tracked artifact.  (It was
 `bench/data/` and requires the walk to equal the generator's manifest, so a file
 written there by anything else is a failure by design.)
 
+Two later milestones brought their own ranking/benchmark pairs, in the same
+shape.  `bench/rank_align.py` and `bench/bench_alignment.py` are the pairwise
+aligner: six rows, both sides aligning every pair with the same scheme and the
+scores gated equal before a time is quoted, the ranking pass through parasail's
+own bindings and the benchmark through `biofasting.alignment`.
+`bench/rank_arrow.py` and `bench/bench_arrow.py` are the Arrow tables: the same
+five corpus rows and four independent producers of the same table —
+`SeqIO.parse` into lists, `polars-bio`'s Rust reader, a pure-Python floor and
+this package — with the gate over the *whole table*, column by column and value
+by value, and with the delivered benchmark importing the ranking pass's own
+producers rather than copying them, so that the two tables are built by one
+piece of code.  Both pairs need dependencies the runner does not (`parasail`;
+`pyarrow`, `polars` and `polars-bio`); they are pinned in
+`bench/requirements.txt` with the reason written beside them.  (*This paragraph
+was written in the working tree: **no commits and no pushes** are made by the
+agent that does the work — the owner commits and pushes.*)
+
 Each workload also carries a **`biofasting`** row once the package is
 importable, so the thing being built is measured by the same harness, against
 the same reference, under the same digest gate as everything else.  The runner
