@@ -14,6 +14,13 @@ biopython==1.88
 pysam==0.24.1
 pyfaidx==0.9.0.4
 
+# The competitor `bench/bench_index_cache.py` measures against, and the reason
+# the index cache exists at all: pyfastx keeps its index on disk (a SQLite
+# database named `<file>.fxi`) and opens it with a lookup, so its open is the
+# floor this package had to reach.  Optional -- the script runs without it and
+# prints `-` in the comparison columns.
+pyfastx==2.3.1
+
 # Step 0.4.  cProfile is in the standard library; py-spy adds an
 # uninstrumented, wall-clock view that sees inside C extensions.  It is a
 # profiler, not a benchmark dependency -- bench/run.py does not need it.

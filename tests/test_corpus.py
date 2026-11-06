@@ -87,13 +87,18 @@ def manifest_entries():
 
 
 def corpus_files():
-    """Every generated file in the corpus, as paths relative to `bench/data`."""
+    """Every generated file in the corpus, as paths relative to `bench/data`.
+
+    Index caches are excluded: `.bfqi`/`.bfqd` are written here by the tests
+    themselves and `.fxi` by pyfastx, and neither is a FASTQ file the corpus
+    contains.  The same rule the `.fai` exclusion has always applied.
+    """
     return sorted(
         str(path.relative_to(DATA))
         for path in DATA.rglob("*")
         if path.is_file()
         and path.name not in NOT_GENERATED
-        and not path.name.endswith(".fai")
+        and not path.name.endswith((".fai", ".bfqi", ".bfqd", ".fxi"))
     )
 
 

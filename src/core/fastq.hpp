@@ -100,6 +100,15 @@ class FastqScanner {
   FastqScanner(const char* data, std::size_t size) noexcept
       : data_(data), size_(size) {}
 
+  // `mapped` says the span is a file-backed mapping that this scanner may give
+  // pages back from as it passes them.  It is a promise about where the bytes
+  // live, not a hint: on anonymous memory the same call zeroes what it is asked
+  // to release, so only the caller that mapped a file may pass true.  What it
+  // buys is a streaming read of a 100 GB file that holds one window of it
+  // resident instead of all of it -- see src/core/mapping.hpp.
+  FastqScanner(const char* data, std::size_t size, bool mapped) noexcept
+      : data_(data), size_(size), mapped_(mapped) {}
+
   // The span being scanned.  Needed by the grid, which builds views over the
   // same bytes: for a gzipped file those are the inflated ones, and only the
   // scanner knows where they are.
@@ -125,12 +134,15 @@ class FastqScanner {
   FastqStatus slow_path(FastqRecord& out);
 
   void fail(std::string message, std::size_t offset);
+  void drop_behind() noexcept;
 
   const char* data_;
   std::size_t size_;
   std::size_t position_ = 0;
   std::size_t record_index_ = 0;
   std::size_t error_offset_ = 0;
+  bool mapped_ = false;      // the bytes are a file mapping this may release
+  std::size_t dropped_ = 0;  // everything before this has been released
   bool failed_ = false;  // once malformed, always malformed
   std::string error_message_;
 
@@ -169,11 +181,27 @@ struct FastqEntry {
   std::size_t sequence_offset = 0;  // valid when `plain`
   std::size_t quality_offset = 0;   // valid when `plain`
   const char* name = nullptr;       // the key's first byte: in the buffer, or owned
+  // FNV-1a of the key, computed while the key's page is hot during the build.
+  // The on-disk index needs a hash for every key to lay out its lookup table,
+  // and recomputing them from the writer would mean walking the whole file a
+  // second time -- which, on a dropped-pages build, means faulting it all back
+  // in and paying the file's size in peak memory after having just avoided it.
+  std::uint64_t key_hash = 0;
   std::uint32_t title_length = 0;   // header bytes after the '@', stripped
   std::uint32_t name_length = 0;    // how long the key is
   std::uint32_t length = 0;         // sequence length; the quality's length too
   bool plain = false;
 };
+
+// FNV-1a over a record's key.
+//
+// One function, because the index file's lookup table is written by one piece of
+// code and probed by another: a table built with one hash and probed with a
+// different one finds nothing, and a hash that varies with the process would do
+// the same across runs.  It is also cheap enough to compute while the key's page
+// is already in hand, which is why the build does it and the writer does not
+// have to walk the file again.
+std::uint64_t fastq_key_hash(const char* bytes, std::size_t size) noexcept;
 
 // A name-keyed index over a FASTQ file held in memory.
 //
@@ -187,9 +215,41 @@ struct FastqEntry {
 // duplicate key refused.  Refused through failed()/error_message() rather than
 // by throwing, so that the binding owns the exception type -- the same split
 // `FastaIndex` makes.
+// The fields of one record, copied out of the bytes they were parsed from.
+//
+// A record the scanner had to assemble is returned as views into its own
+// scratch buffer, which dies with the scanner, so anything that outlives one
+// call has to own its text.  This is that owner, and it is shared by the
+// in-memory index and the file-backed one so that "a fetch" cannot come to
+// mean two different things.
+struct FastqRecordText {
+  std::string title;
+  std::string sequence;
+  std::string quality;
+};
+
+// Parses `entry`'s own span again.  Only meaningful for a record that is not
+// `plain`; free, because the file-backed index has the same job and two copies
+// of it would be two ways to read the same bytes.
+FastqRecordText fastq_rescan(const char* data, const FastqEntry& entry);
+
+// The record's fields, byte for byte what the parser would build: a memcpy for
+// a plain record, a re-scan for one that was assembled.
+std::string fastq_entry_title(const char* data, const FastqEntry& entry);
+std::string fastq_entry_sequence(const char* data, const FastqEntry& entry);
+std::string fastq_entry_quality(const char* data, const FastqEntry& entry);
+std::string fastq_entry_slice(const char* data, const FastqEntry& entry,
+                              std::size_t start, std::size_t end);
+
 class FastqIndex {
  public:
-  FastqIndex(const char* data, std::size_t size);
+  // `mapped` is the same promise FastqScanner's three-argument constructor
+  // takes: the bytes are a file mapping whose scanned pages may be given back.
+  // A build over a 369 MB file therefore ends with a resident set of one scan
+  // window plus the index itself, rather than the file's size -- which is what
+  // makes peak memory a property of the index and not of the input.
+  explicit FastqIndex(const char* data, std::size_t size,
+                       bool mapped = false);
 
   std::size_t size() const noexcept { return entries_.size(); }
   const std::vector<FastqEntry>& entries() const noexcept { return entries_; }
@@ -204,36 +264,30 @@ class FastqIndex {
   }
 
   // The record's title, right-stripped, without its '@'.
-  std::string title(const FastqEntry& entry) const;
+  std::string title(const FastqEntry& entry) const {
+    return fastq_entry_title(data_, entry);
+  }
   // The record's sequence, byte for byte what the parser would build.
-  std::string sequence(const FastqEntry& entry) const;
-  std::string quality(const FastqEntry& entry) const;
+  std::string sequence(const FastqEntry& entry) const {
+    return fastq_entry_sequence(data_, entry);
+  }
+  std::string quality(const FastqEntry& entry) const {
+    return fastq_entry_quality(data_, entry);
+  }
   // The [start, end) window of the sequence, clamped to the record.  Negative
   // indices mean nothing here, exactly as in FastaIndex.
   std::string sequence_slice(const FastqEntry& entry, std::size_t start,
-                             std::size_t end) const;
+                             std::size_t end) const {
+    return fastq_entry_slice(data_, entry, start, end);
+  }
 
   bool failed() const noexcept { return failed_; }
   const std::string& error_message() const noexcept { return error_message_; }
 
  private:
-  // The record's fields, parsed again from their own span.  Only reachable for
-  // a record that is not `plain`, which is why it is allowed to be slow.
-  //
-  // It returns owned strings rather than the `FastqRecord` the scanner hands
-  // back, and that is not a style choice: a record the scanner had to assemble
-  // is returned as views into the scanner's own scratch buffer, so the record
-  // would be dangling the moment the scanner went out of scope.  Copying here
-  // is the fix, and the copy is one the reference makes for every record.
-  struct FastqText {
-    std::string title;
-    std::string sequence;
-    std::string quality;
-  };
-  FastqText rescan(const FastqEntry& entry) const;
-
   const char* data_;
   std::size_t size_;
+  bool mapped_ = false;  // the data is a file mapping this may advise about
   std::vector<FastqEntry> entries_;
   // Keyed by view, not by string: a key either sits in the caller's buffer or
   // in `owned_names_` below, and both outlive the index, so the map needs no

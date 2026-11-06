@@ -4,6 +4,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +24,7 @@
 #include "cpu_features.hpp"
 #include "fasta.hpp"
 #include "fastq.hpp"
+#include "fastq_index_file.hpp"
 #include "feature.hpp"
 #include "flatfile.hpp"
 #include "inflate.hpp"
@@ -77,8 +81,12 @@ class BufferRef {
 // either points at the caller's buffer or owns an inflated one -- never both.
 class PyFastqScanner {
  public:
-  explicit PyFastqScanner(nb::handle source)
-      : buffer_(source), scanner_(buffer_.data(), buffer_.size()) {}
+  // `mapped` is FastqScanner's promise that the bytes are a file mapping it may
+  // release as it passes them.  It makes a streaming read of a large file cost
+  // one window of resident memory instead of the file's size, and it is why the
+  // Python wrapper -- the only caller that knows it mapped a file -- passes it.
+  explicit PyFastqScanner(nb::handle source, bool mapped = false)
+      : buffer_(source), scanner_(buffer_.data(), buffer_.size(), mapped) {}
 
   // `source` is a whole gzip file: inflate it and scan the result.  The
   // compressed buffer is only needed until the inflation finishes.
@@ -660,11 +668,36 @@ class PyFlatFileIndex {
 // The Python face of FastqIndex.  Same buffer-lifetime rule as FastaIndex --// and here it is load-bearing twice over, because the index does not merely
 // point into the buffer: it *keys* itself on views of the buffer's bytes, so a
 // buffer that moved would take every key in the map with it.
+// Replace `path` with these bytes, or leave nothing behind.  Used for the data
+// half of a gzip index cache, where a half-written file would be a cache the
+// next process maps and trusts.
+void write_atomically(const std::string& path, const char* data,
+                      std::size_t size) {
+  const std::string temporary = path + ".tmp";
+  std::FILE* file = std::fopen(temporary.c_str(), "wb");
+  if (file == nullptr) {
+    throw std::runtime_error("cannot open " + temporary + " for writing");
+  }
+  bool ok = size == 0 || std::fwrite(data, 1, size, file) == size;
+  ok = std::fflush(file) == 0 && ok;
+  ok = std::fclose(file) == 0 && ok;
+  if (!ok) {
+    std::remove(temporary.c_str());
+    throw std::runtime_error("cannot write " + temporary);
+  }
+  if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+    std::remove(temporary.c_str());
+    throw std::runtime_error("cannot replace " + path);
+  }
+}
+
 class PyFastqIndex {
  public:
-  explicit PyFastqIndex(nb::handle source)
-      : buffer_(source), index_(buffer_.data(), buffer_.size()) {
-    if (index_.failed()) throw nb::value_error(index_.error_message().c_str());
+
+  explicit PyFastqIndex(nb::handle source, bool mapped = false)
+      : buffer_(source) {
+    index_.emplace(buffer_.data(), buffer_.size(), mapped);
+    if (index_->failed()) throw nb::value_error(index_->error_message().c_str());
   }
 
   // `source` is a whole gzip file -- any gzip file, BGZF included, since BGZF
@@ -692,27 +725,76 @@ class PyFastqIndex {
     return new PyFastqIndex(std::move(inflated));
   }
 
-  std::size_t size() const noexcept { return index_.size(); }
+  // Open an index that was written by `save_index` instead of building one.
+  //
+  // `source` is the data the index describes and `index_source` the mapped
+  // index file; both are kept alive here, because the entries are offsets into
+  // the first and the keys of assembled records live in the second.  Every
+  // check that makes such an index safe to trust -- same size, same
+  // fingerprint, ranges inside the file -- happens in `FastqIndexView::open`,
+  // and a failure is a `ValueError` the caller is expected to catch and
+  // rebuild from.
+  static PyFastqIndex* from_index(nb::handle source, nb::handle index_source,
+                                  nb::object origin) {
+    return new PyFastqIndex(source, index_source, origin);
+  }
 
-  bool has(const std::string& name) const { return index_.find(name) != nullptr; }
+  // Write this index next to the data it was built from, so that the next
+  // process can open it with `from_index` and skip the scan.
+  //
+  // `store_data` is a path the indexed bytes themselves are written to, and is
+  // what makes an index over inflated gzip data usable: the index says where a
+  // record is in the decompressed stream, so without a copy of that stream the
+  // next process would have to decompress the archive before it could use a
+  // single offset.  `origin` is the archive those bytes came from, and is
+  // recorded so that replacing it invalidates the pair.
+  void save_index(const std::string& path, nb::object store_data,
+                  nb::object origin) const {
+    if (!index_) {
+      throw std::runtime_error(
+          "this index was opened from a file, not built from data");
+    }
+    std::optional<BufferRef> origin_buffer;
+    if (!origin.is_none()) origin_buffer.emplace(origin);
+    const char* origin_data =
+        origin_buffer ? origin_buffer->data() : nullptr;
+    const std::size_t origin_size =
+        origin_buffer ? origin_buffer->size() : 0;
+    if (!store_data.is_none()) {
+      const std::string target = nb::cast<std::string>(store_data);
+      write_atomically(target, indexed_data(), indexed_size());
+    }
+    std::string error;
+    if (!biofasting::write_fastq_index_file(
+            path, *index_, indexed_data(), indexed_size(), origin_data,
+            origin_size, error)) {
+      throw std::runtime_error(error.c_str());
+    }
+  }
+
+  std::size_t size() const noexcept {
+    return index_ ? index_->size() : view_.size();
+  }
+
+  bool has(const std::string& name) const { return lookup(name) != nullptr; }
 
   // Bytes, not a SeqRecord: building one is the interop shim's job, and doing
   // it here would put a Biopython dependency in the core.  The reference's
   // index returns a record and pays for it on every fetch; that difference is
   // the whole point of this class.
   nb::bytes get(const std::string& name) const {
-    const std::string sequence = index_.sequence(require(name));
+    const std::string sequence = sequence_of(require(name));
     return nb::bytes(sequence.data(), sequence.size());
   }
 
   nb::bytes quality(const std::string& name) const {
-    const std::string text = index_.quality(require(name));
+    const std::string text = quality_of(require(name));
     return nb::bytes(text.data(), text.size());
   }
 
   nb::bytes slice(const std::string& name, std::size_t start,
                   std::size_t end) const {
-    const std::string window = index_.sequence_slice(require(name), start, end);
+    const std::string window = slice_of(require(name), start, end);
     return nb::bytes(window.data(), window.size());
   }
 
@@ -728,7 +810,7 @@ class PyFastqIndex {
   }
 
   std::string title(const std::string& name) const {
-    return index_.title(require(name));
+    return title_of(require(name));
   }
 
   // Whether reading this record is a memcpy (true) or a re-parse of its own
@@ -748,34 +830,95 @@ class PyFastqIndex {
 
   nb::list keys() const {
     nb::list names;
-    for (const biofasting::FastqEntry& entry : index_.entries()) {
-      const std::string_view key = index_.key_of(entry);
-      names.append(nb::str(key.data(), key.size()));
+    if (index_) {
+      for (const biofasting::FastqEntry& entry : index_->entries()) {
+        const std::string_view key = index_->key_of(entry);
+        names.append(nb::str(key.data(), key.size()));
+      }
+    } else {
+      biofasting::FastqEntry entry;
+      for (std::size_t i = 0; i < view_.size(); ++i) {
+        view_.entry_at(i, entry);
+        const std::string_view key = view_.key_of(entry);
+        names.append(nb::str(key.data(), key.size()));
+      }
     }
     return names;
   }
 
  private:
+  // A file-backed index: `source` is the data it describes, `index_source` the
+  // mapped index file.  Both are held, because the entries are offsets into
+  // the first and the keys of assembled records live in the second.  `origin`
+  // is the compressed archive the data was inflated from, when there is one:
+  // the index records it, and a mismatch means the pair is stale.
+  PyFastqIndex(nb::handle source, nb::handle index_source, nb::object origin)
+      : buffer_(source), index_buffer_(index_source) {
+    std::optional<BufferRef> origin_buffer;
+    if (!origin.is_none()) origin_buffer.emplace(origin);
+    std::string error;
+    if (!biofasting::FastqIndexView::open(
+            index_buffer_.data(), index_buffer_.size(), buffer_.data(),
+            buffer_.size(), origin_buffer ? origin_buffer->data() : nullptr,
+            origin_buffer ? origin_buffer->size() : 0, view_, error)) {
+      throw nb::value_error(error.c_str());
+    }
+  }
+
   // A compressed source is inflated into `inflated_`, whose bytes become the
   // ones indexed; an uncompressed one is read through `buffer_`.  Exactly one
   // of the two is ever non-empty, and both are declared before `index_`,
   // because `index_` points into whichever one it was given -- and, for the
   // plain case, keys itself on views of it.
   explicit PyFastqIndex(biofasting::GzipBuffer&& inflated)
-      : inflated_(std::move(inflated)),
-        index_(inflated_.data(), inflated_.size()) {
-    if (index_.failed()) throw nb::value_error(index_.error_message().c_str());
+      : inflated_(std::move(inflated)) {
+    index_.emplace(inflated_.data(), inflated_.size());
+    if (index_->failed()) throw nb::value_error(index_->error_message().c_str());
   }
 
+  const char* indexed_data() const noexcept {
+    return index_ ? (buffer_.data() != nullptr ? buffer_.data() : inflated_.data())
+                  : nullptr;
+  }
+  std::size_t indexed_size() const noexcept {
+    return index_ ? (buffer_.data() != nullptr ? buffer_.size() : inflated_.size())
+                  : 0;
+  }
+
+  const biofasting::FastqEntry* lookup(const std::string& name) const {
+    return index_ ? index_->find(name) : view_.find(name);
+  }
+
+  // The reference for a built index points into its entry vector; the one for
+  // a mapped index points into the view's scratch slot, which the next lookup
+  // overwrites.  Every caller uses it inside one call, which is why one
+  // signature can serve both.
   const biofasting::FastqEntry& require(const std::string& name) const {
-    const biofasting::FastqEntry* entry = index_.find(name);
+    const biofasting::FastqEntry* entry = lookup(name);
     if (entry == nullptr) throw nb::key_error(name.c_str());
     return *entry;
   }
 
+  std::string title_of(const biofasting::FastqEntry& entry) const {
+    return index_ ? index_->title(entry) : view_.title(entry);
+  }
+  std::string sequence_of(const biofasting::FastqEntry& entry) const {
+    return index_ ? index_->sequence(entry) : view_.sequence(entry);
+  }
+  std::string quality_of(const biofasting::FastqEntry& entry) const {
+    return index_ ? index_->quality(entry) : view_.quality(entry);
+  }
+  std::string slice_of(const biofasting::FastqEntry& entry, std::size_t start,
+                       std::size_t end) const {
+    return index_ ? index_->sequence_slice(entry, start, end)
+                  : view_.sequence_slice(entry, start, end);
+  }
+
   BufferRef buffer_;
+  BufferRef index_buffer_;
   biofasting::GzipBuffer inflated_;
-  biofasting::FastqIndex index_;
+  std::optional<biofasting::FastqIndex> index_;
+  biofasting::FastqIndexView view_;
 };
 
 // One field of one record row, borrowed rather than copied.  The rows are
@@ -859,8 +1002,12 @@ NB_MODULE(_core, m) {
                              "Use biofasting.fastq.open_fastq() rather than "
                              "building this directly: it is the piece that "
                              "keeps the buffer alive.")
-      .def(nb::init<nb::handle>(), "source"_a,
-           "Scan `source`, which must expose the buffer protocol.")
+      .def(nb::init<nb::handle, bool>(), "source"_a, "mapped"_a = false,
+           "Scan `source`, which must expose the buffer protocol.  `mapped` "
+           "promises the bytes are a file-backed mapping that the scan may give "
+           "back as it passes them, which keeps a streaming read of a large "
+           "file at one window of resident memory.  Never pass it for a buffer "
+           "this process allocated.")
       .def_static("from_gzip", &PyFastqScanner::from_gzip, "source"_a,
                   "Inflate a whole gzip file from a buffer and scan the "
                   "result.\n\n"
@@ -1194,8 +1341,12 @@ NB_MODULE(_core, m) {
                            "the buffer alive -- which here matters twice, "
                            "because the lookup table is keyed on views of the "
                            "buffer's own bytes.")
-      .def(nb::init<nb::handle>(), "source"_a,
-           "Index `source`, which must expose the buffer protocol.")
+      .def(nb::init<nb::handle, bool>(), "source"_a, "mapped"_a = false,
+           "Index `source`, which must expose the buffer protocol.  `mapped` "
+           "promises the bytes are a file-backed mapping: the build then gives "
+           "back the pages it has already scanned and switches what remains to "
+           "random access, so peak memory follows the index rather than the "
+           "file.  Never pass it for a buffer this process allocated.")
       .def_static("from_gzip", &PyFastqIndex::from_gzip, "source"_a,
                   nb::rv_policy::take_ownership,
                   "Index a whole gzip file, `source`, by inflating it and "
@@ -1204,6 +1355,30 @@ NB_MODULE(_core, m) {
                   "file `SeqIO.index` refuses for being plain gzip is "
                   "readable here.  The owner keeps the inflated bytes alive; "
                   "that is what the returned object holds.")
+      .def_static("from_index", &PyFastqIndex::from_index, "source"_a,
+                  "index_source"_a, "origin"_a = nb::none(),
+                  nb::rv_policy::take_ownership,
+                  "Open an index written by `save_index` over `source`, "
+                  "without scanning the data.\n\n"
+                  "The index is validated against the data it claims to "
+                  "describe -- size, a fingerprint of both ends, and every "
+                  "range inside the file -- and a mismatch raises "
+                  "`ValueError`, which the caller should treat as a reason to "
+                  "rebuild rather than as a failure.  `origin` is the "
+                  "compressed archive `source` was inflated from, when the "
+                  "index was built by a call that stored a decompressed copy; "
+                  "an index that records an origin refuses to open without "
+                  "it.")
+      .def("save_index", &PyFastqIndex::save_index, "path"_a,
+           "store_data"_a = nb::none(), "source"_a = nb::none(),
+           "Write this index to `path` so that `from_index` can open it "
+           "without a scan.  Only valid for an index built from data in this "
+           "process, not for one opened by `from_index`.\n\n"
+           "`store_data` writes the indexed bytes themselves to that path, "
+           "which is what makes an index over inflated gzip data usable "
+           "without decompressing it again; `source` is the archive those "
+           "bytes came from, recorded so that replacing it invalidates the "
+           "pair.")
       .def("__len__", &PyFastqIndex::size, "Number of records.")
       .def("__contains__", &PyFastqIndex::has, "name"_a,
            "Whether a record with this key exists.")

@@ -79,6 +79,8 @@ set(BIOFASTING_CORE_SOURCES
   src/core/cpu_features.cpp
   src/core/line.cpp
   src/core/fastq.cpp
+  src/core/fastq_index_file.cpp
+  src/core/mapping.cpp
   src/core/fasta.cpp
   src/core/flatfile.cpp
   src/core/annotations.cpp

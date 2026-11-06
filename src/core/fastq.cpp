@@ -2,13 +2,49 @@
 
 #include <algorithm>
 
+#include "mapping.hpp"
+
 namespace biofasting {
+
+std::uint64_t fastq_key_hash(const char* bytes, std::size_t size) noexcept {
+  std::uint64_t hash = 0xcbf29ce484222325ULL;
+  for (std::size_t i = 0; i < size; ++i) {
+    hash ^= static_cast<unsigned char>(bytes[i]);
+    hash *= 0x100000001b3ULL;
+  }
+  return hash;
+}
 
 FastqStatus FastqScanner::next(FastqRecord& out) {
   if (failed_) return FastqStatus::error;
   if (position_ >= size_) return FastqStatus::end;
-  if (try_fast_path(out)) return FastqStatus::ok;
-  return slow_path(out);
+  FastqStatus status;
+  if (try_fast_path(out)) {
+    status = FastqStatus::ok;
+  } else {
+    status = slow_path(out);
+  }
+  if (mapped_ && status == FastqStatus::ok) drop_behind();
+  return status;
+}
+
+// Gives back the pages this scanner has already been through.  A record
+// returned by next() points into the window that is kept, so the caller's views
+// stay valid; what is released is the part of the file no later record can
+// point into.
+//
+// Released in steps of a whole window rather than a few hundred bytes at a
+// time: the obvious "drop everything older than a window" runs on *every*
+// record once the scanner has passed the window, and a million `madvise` calls
+// of a few hundred bytes is both pointless and measurably slower than the scan
+// itself.  The resident window therefore runs between one and two windows in
+// size, which is the intended bound.
+void FastqScanner::drop_behind() noexcept {
+  const std::size_t ahead = position_ - dropped_;
+  if (ahead < 2 * kMappingWindow) return;
+  const std::size_t upto = position_ - kMappingWindow;
+  mapping_drop_pages(data_, dropped_, upto);
+  dropped_ = upto;
 }
 
 bool FastqScanner::try_fast_path(FastqRecord& out) noexcept {
@@ -221,10 +257,12 @@ FastqGrid scan_grid(const char* data, std::size_t size) {
   return grid;
 }
 
-FastqIndex::FastqIndex(const char* data, std::size_t size)
-    : data_(data), size_(size) {
+FastqIndex::FastqIndex(const char* data, std::size_t size, bool mapped)
+    : data_(data), size_(size), mapped_(mapped) {
   FastqScanner scanner(data, size);
   FastqRecord record;
+  std::size_t dropped = 0;  // everything before this has been given back
+
 
   while (true) {
     // The scanner stops just past the record it returned, so where it stands
@@ -289,6 +327,7 @@ FastqIndex::FastqIndex(const char* data, std::size_t size)
     entry.length = static_cast<std::uint32_t>(record.sequence.size());
 
     const std::string_view key = key_of(entry);
+    entry.key_hash = fastq_key_hash(key.data(), key.size());
     if (by_name_.empty()) {
       // One reservation, made from the size of the first record, because a
       // million rehashes of a table that is one short of its next prime is a
@@ -307,7 +346,21 @@ FastqIndex::FastqIndex(const char* data, std::size_t size)
       return;
     }
     entries_.push_back(entry);
+
+    if (mapped_ && start - dropped >= 2 * kMappingWindow) {
+      // The scan has been through everything before this point and the index
+      // records places rather than bytes, so the pages behind it are only page
+      // cache now -- still there if a later fetch asks for them, but not charged
+      // to this process's resident set.  That is what makes the peak memory of
+      // an index build a function of the index rather than of the file.  As in
+      // FastqScanner::drop_behind, the release is in whole windows: doing it per
+      // record would be a million `madvise` calls of a few hundred bytes.
+      const std::size_t upto = start - kMappingWindow;
+      mapping_drop_pages(data_, dropped, upto);
+      dropped = upto;
+    }
   }
+
 }
 
 const FastqEntry* FastqIndex::find(std::string_view name) const noexcept {
@@ -316,50 +369,49 @@ const FastqEntry* FastqIndex::find(std::string_view name) const noexcept {
   return &entries_[it->second];
 }
 
-FastqIndex::FastqText FastqIndex::rescan(const FastqEntry& entry) const {
+FastqRecordText fastq_rescan(const char* data, const FastqEntry& entry) {
   // The span is exactly one record long, so the scanner sees the same bytes it
   // saw during the build and stops at the same place.  It cannot fail: it read
   // this record once already, and the build would have refused the file
   // otherwise.
-  FastqScanner scanner(data_ + entry.offset, entry.end - entry.offset);
+  FastqScanner scanner(data + entry.offset, entry.end - entry.offset);
   FastqRecord record;
   scanner.next(record);
   // Copied out before the scanner dies, because for a record that is not
   // `plain` these views point into its scratch buffer.
-  FastqText text;
+  FastqRecordText text;
   text.title.assign(record.title.data(), record.title.size());
   text.sequence.assign(record.sequence.data(), record.sequence.size());
   text.quality.assign(record.quality.data(), record.quality.size());
   return text;
 }
 
-std::string FastqIndex::title(const FastqEntry& entry) const {
-  if (entry.plain) return std::string(data_ + entry.offset + 1, entry.title_length);
-  return rescan(entry).title;
+std::string fastq_entry_title(const char* data, const FastqEntry& entry) {
+  if (entry.plain) return std::string(data + entry.offset + 1, entry.title_length);
+  return fastq_rescan(data, entry).title;
 }
 
-std::string FastqIndex::sequence(const FastqEntry& entry) const {
-  if (entry.plain) return std::string(data_ + entry.sequence_offset, entry.length);
-  return rescan(entry).sequence;
+std::string fastq_entry_sequence(const char* data, const FastqEntry& entry) {
+  if (entry.plain) return std::string(data + entry.sequence_offset, entry.length);
+  return fastq_rescan(data, entry).sequence;
 }
 
-std::string FastqIndex::quality(const FastqEntry& entry) const {
-  if (entry.plain) return std::string(data_ + entry.quality_offset, entry.length);
-  return rescan(entry).quality;
+std::string fastq_entry_quality(const char* data, const FastqEntry& entry) {
+  if (entry.plain) return std::string(data + entry.quality_offset, entry.length);
+  return fastq_rescan(data, entry).quality;
 }
 
-std::string FastqIndex::sequence_slice(const FastqEntry& entry,
-                                       std::size_t start,
-                                       std::size_t end) const {
+std::string fastq_entry_slice(const char* data, const FastqEntry& entry,
+                              std::size_t start, std::size_t end) {
   start = std::min(start, static_cast<std::size_t>(entry.length));
   end = std::min(end, static_cast<std::size_t>(entry.length));
   if (end <= start) return std::string();
   if (entry.plain) {
-    return std::string(data_ + entry.sequence_offset + start, end - start);
+    return std::string(data + entry.sequence_offset + start, end - start);
   }
   // No stride to walk, so the honest thing is to build the record and cut it.
   // Rare, and correct.
-  const std::string whole = sequence(entry);
+  const std::string whole = fastq_entry_sequence(data, entry);
   return whole.substr(start, end - start);
 }
 
